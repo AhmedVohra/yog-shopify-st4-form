@@ -460,7 +460,7 @@ async function submitForm() {
     const flattened = await pdf.save();
     const base64 = btoa(String.fromCharCode(...new Uint8Array(flattened)));
 
-    // Send to Shopify
+    // Send to the server (stored in SharePoint)
     const res = await fetch(apiBase + '/save-signed-pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -472,7 +472,7 @@ async function submitForm() {
       throw new Error(err.error || 'Upload failed');
     }
 
-    status.innerHTML = '<div class="success">✅ Form submitted successfully!<br><small>Your signed PDF has been sent to Shopify.</small></div>';
+    status.innerHTML = '<div class="success">✅ Form submitted successfully!<br><small>Your signed PDF has been received.</small></div>';
   } catch (err) {
     status.innerHTML = '<div class="error">❌ ' + err.message + '</div>';
     document.getElementById('submitBtn').disabled = false;

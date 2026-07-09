@@ -34,7 +34,7 @@ On every start, the server also auto-launches a `localtunnel` (see `startTunnel(
 This is a single-process Express app (`shopify-server.js`) that is simultaneously:
 1. A **Shopify embedded admin app** (Template Designer, at `/designer` and `/designer/embedded`)
 2. A **Shopify App Proxy target** serving a customer-facing form on the storefront domain
-3. A thin **Shopify Admin API client** for uploading signed PDFs and attaching them to orders
+3. A **SharePoint uploader** (`sharepoint.js`) — signed PDFs are stored in a SharePoint document library via Microsoft Graph (client-credentials), NOT in Shopify Files (that flow was removed; only dormant dev utilities still use the Admin API)
 
 Everything — routing, template CRUD, Shopify GraphQL calls, OAuth — lives in the one server file; there is no MVC layering or separate route/controller modules.
 
@@ -44,7 +44,9 @@ Every customer-facing API/page route exists in two forms:
 - Direct: `/form`, `/api/templates/:id`, `/api/save-signed-pdf`
 - Proxied: `/proxy/form`, `/proxy/api/templates/:id`, `/proxy/api/save-signed-pdf`
 
-The `/proxy/*` routes exist because Shopify's App Proxy rewrites `{store}.myshopify.com/apps/pdf-signer/*` to `{app}/proxy/*` and signs the request with a `signature` query param (verified by `verifyProxySignature`). The direct routes remain for standalone testing without going through Shopify at all. `public/customer-form.html` detects which mode it's in at load time by checking `location.pathname` for the `/apps/pdf-signer/` prefix and switches its `apiBase` accordingly — when editing API calls in that file, both code paths need to stay in sync.
+The `/proxy/*` routes exist because Shopify's App Proxy rewrites `{store}.myshopify.com/apps/pdf-signer/*` to `{app}/proxy/*` and signs the request with a `signature` query param (verified by `verifyProxySignature`; set `REQUIRE_PROXY_SIGNATURE=1` in production to reject unsigned requests). The direct routes remain for standalone testing without going through Shopify at all. `public/customer-form.html` detects which mode it's in at load time by checking `location.pathname` for the `/apps/pdf-signer/` prefix and switches its `apiBase` accordingly — when editing API calls in that file, both code paths need to stay in sync.
+
+**`/proxy/form` serves a Liquid fragment, not the raw HTML file.** `buildLiquidFragment()` in `shopify-server.js` extracts the `<style>` and `<body>` content of `customer-form.html`, re-scopes the `body {` CSS rule to `#pdfSignerRoot`, and returns it with `Content-Type: application/liquid` so Shopify renders the form inside the store theme (header/footer, no iframe). Two constraints follow: `customer-form.html` must never contain literal `{{` or `{%` sequences (Liquid would parse them and silently break the proxied page — JS template literals `${...}` are fine), and its single `body {` style rule must stay on its own line so the selector rewrite keeps matching.
 
 Similarly, `/designer/embedded` is HMAC-verified (`verifyShopifyHmac`, for requests coming from Shopify Admin's iframe) while plain `/designer` is not (standalone access).
 
@@ -58,15 +60,17 @@ Similarly, `/designer/embedded` is HMAC-verified (`verifyShopifyHmac`, for reque
 
 ### Template storage
 
-Templates (PDF + field layout + metadata) are stored as a flat array in `data/templates.json`, read/written wholesale via `loadTemplates()` / `saveTemplates()` — no database, no migrations, no partial updates. Each template embeds the full source PDF as base64 (`pdfBase64`), so this file grows large; treat it as dev-only storage (the README already calls out that production should swap this for a real DB).
+Templates (PDF + field layout + metadata) are stored as a flat array in `data/templates.json`, read/written wholesale via `loadTemplates()` / `saveTemplates()` — no database, no migrations, no partial updates. Each template embeds the full source PDF as base64 (`pdfBase64`), so this file grows large; treat it as dev-only storage (the README already calls out that production should swap this for a real DB). On Azure Functions the deployed filesystem is read-only: `templates.json` is baked-in seed data there, `saveTemplates()` throws a tagged error, and the template POST/PUT/DELETE routes return 503 — designer edits in production require a redeploy.
 
 ### PDF handling — client-side, not server-side
 
-The server never rasterizes or edits PDFs. All rendering (`pdf.js`) and field-writing (`pdf-lib`) happens in the browser, loaded from CDN in `public/template-designer.html` and `public/customer-form.html` (not npm dependencies — check those `<script src>` tags if bumping versions). The server's only PDF-related job is accepting a final signed PDF as base64 and forwarding the bytes to Shopify's staged-upload flow (`uploadPdfToShopify` in `shopify-server.js`): `stagedUploadsCreate` → multipart POST to the staged URL → `fileCreate` to register it and get a permanent URL. Optionally that URL is then written onto an order via `attachFileToOrder` (a `metafieldsSet` mutation, namespace `custom`, key `signed_pdf_url`).
+The server never rasterizes or edits PDFs. All rendering (`pdf.js`) and field-writing (`pdf-lib`) happens in the browser, loaded from CDN in `public/template-designer.html` and `public/customer-form.html` (not npm dependencies — check those `<script src>` tags if bumping versions). The server's only PDF-related job is accepting a final signed PDF as base64 (`handleSaveSignedPdf` in `shopify-server.js`) and uploading the bytes to a SharePoint document library via `uploadPdfToSharePoint` in `sharepoint.js` (Microsoft Graph client-credentials flow: token from `login.microsoftonline.com`, lazy site/drive resolution, then a simple `PUT …:/content` — fine because signed PDFs are well under Graph's 4 MB simple-upload limit). Stored filenames get a timestamp prefix because Graph PUT silently overwrites same-name files.
 
 ### Deployment targets
 
-Three deploy configs are checked in and kept in sync manually (no shared config source): `render.yaml` (Render blueprint), `fly.toml` + `Dockerfile` (Fly.io), and `Procfile` (Heroku-style). All three ultimately just run `npm start`; differences are only in how env vars/secrets are supplied. `.env.example` is the canonical list of required env vars.
+The production target is an **Azure Function App** running the whole Express server via a Functions custom handler: `host.json` (root) points the handler at `node shopify-server.js` with `enableForwardingHttpRequest`, and `server/function.json` is a single anonymous catch-all HTTP trigger (`route: "{*segments}"`). Two things in `host.json` are load-bearing: `extensions.http.routePrefix: ""` (without it every route lands under `/api/` and the Shopify proxy 404s) and the custom-handler block itself. The server listens on `FUNCTIONS_CUSTOMHANDLER_PORT` when Azure sets it and skips the localtunnel there.
+
+Older deploy configs are still checked in and kept in sync manually: `render.yaml` (Render), `fly.toml` + `Dockerfile` (Fly.io), and `Procfile` (Heroku-style) — all just run `npm start`. `.env.example` is the canonical list of required env vars (Shopify proxy secret + `MS_*`/`SHAREPOINT_*` Graph settings).
 
 ### One-off scripts (`scripts/`)
 

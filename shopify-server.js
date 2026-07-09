@@ -1,4 +1,4 @@
-/**
+﻿/**
  * shopify-server.js
  * -----------------------------------------------------------------------
  * Minimal backend that receives the signed PDF from pdf-signer.html and
@@ -39,6 +39,7 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { uploadPdfToSharePoint } = require('./sharepoint');
 
 const app = express();
 app.use(express.json({ limit: '25mb' })); // signed PDFs are small, but leave headroom
@@ -56,20 +57,46 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ---------- Core routes ----------
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'legacy', 'pdf-signer.html')));
 
-// Template designer — standalone (direct access) & embedded Shopify admin
+// Template designer â€” standalone (direct access) & embedded Shopify admin
 app.get('/designer', (req, res) => res.sendFile(path.join(__dirname, 'public', 'template-designer.html')));
 app.get('/designer/embedded', verifyShopifyHmac, (req, res) => {
-  // Embedded in Shopify admin — serve the same designer; App Bridge handles framing
+  // Embedded in Shopify admin â€” serve the same designer; App Bridge handles framing
   res.sendFile(path.join(__dirname, 'public', 'template-designer.html'));
 });
 
-// Customer form — standalone & via App Proxy
+// Customer form â€” standalone & via App Proxy
 app.get('/form', (req, res) => res.sendFile(path.join(__dirname, 'public', 'customer-form.html')));
 
 // App Proxy: customer form served under store's domain
-// Shopify proxies {store}.myshopify.com/apps/pdf-signer/* → {app}/proxy/*
+// Shopify proxies {store}.myshopify.com/apps/pdf-signer/* â†’ {app}/proxy/*
+//
+// Served as Content-Type: application/liquid so Shopify renders the form
+// INSIDE the store theme (header/footer). Shopify injects the response body
+// into the theme layout, so this must be a body fragment (style + markup +
+// scripts), never a full HTML document. Liquid also parses the content â€”
+// customer-form.html must stay free of literal {{ and {% sequences.
+let liquidFragmentCache = null;
+function buildLiquidFragment() {
+  if (liquidFragmentCache) return liquidFragmentCache;
+  const html = fs.readFileSync(path.join(__dirname, 'public', 'customer-form.html'), 'utf8');
+  const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
+  const bodyMatch = html.match(/<body>([\s\S]*?)<\/body>/);
+  if (!styleMatch || !bodyMatch) throw new Error('customer-form.html: could not extract <style>/<body> for Liquid fragment');
+  // Shopify owns <body> in the theme layout, so re-scope the form's body
+  // rule to the wrapper div and stop claiming the full viewport height.
+  const css = styleMatch[1]
+    .replace(/\nbody \{/, '\n#pdfSignerRoot {')
+    .replace('min-height: 100vh', 'min-height: 80vh');
+  liquidFragmentCache = `<style>${css}</style>\n<div id="pdfSignerRoot">${bodyMatch[1]}</div>`;
+  return liquidFragmentCache;
+}
 app.get('/proxy/form', verifyProxySignature, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'customer-form.html'));
+  try {
+    res.set('Content-Type', 'application/liquid').send(buildLiquidFragment());
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Form unavailable');
+  }
 });
 app.get('/proxy/api/templates/:id', verifyProxySignature, (req, res) => {
   // Forward template API requests from proxy context
@@ -78,25 +105,22 @@ app.get('/proxy/api/templates/:id', verifyProxySignature, (req, res) => {
   if (!tpl) return res.status(404).json({ error: 'Template not found' });
   res.json(tpl);
 });
-app.post('/proxy/api/save-signed-pdf', verifyProxySignature, async (req, res) => {
-  // Save signed PDF through the proxy
+app.post('/proxy/api/save-signed-pdf', verifyProxySignature, handleSaveSignedPdf);
+
+// Shared by the direct and proxied routes: signed PDFs go to SharePoint only.
+async function handleSaveSignedPdf(req, res) {
   try {
-    const { filename, pdfBase64, shopifyOrderId } = req.body;
+    const { filename, pdfBase64 } = req.body;
     if (!pdfBase64) return res.status(400).json({ error: 'pdfBase64 is required' });
     const buffer = Buffer.from(pdfBase64, 'base64');
     const safeName = (filename || 'signed-document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const file = await uploadPdfToShopify(safeName, buffer, req);
-    const fileUrl = file.url || (file.preview && file.preview.image && file.preview.image.url) || null;
-    if (shopifyOrderId) {
-      const gid = String(shopifyOrderId).startsWith('gid://') ? shopifyOrderId : `gid://shopify/Order/${shopifyOrderId}`;
-      if (fileUrl) await attachFileToOrder(gid, fileUrl, req);
-    }
-    res.json({ ok: true, fileId: file.id, fileUrl });
+    const file = await uploadPdfToSharePoint(safeName, buffer);
+    res.json({ ok: true, fileId: file.id, fileUrl: file.webUrl });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
-});
+}
 
 // ---------- Template storage (local JSON file) ----------
 const TEMPLATES_FILE = path.join(__dirname, 'data', 'templates.json');
@@ -106,7 +130,21 @@ function loadTemplates() {
   catch { return []; }
 }
 function saveTemplates(templates) {
-  fs.writeFileSync(TEMPLATES_FILE, JSON.stringify(templates, null, 2), 'utf8');
+  // On Azure Functions the deployed filesystem is read-only — templates.json
+  // is baked-in seed data there and designer edits require a redeploy.
+  try {
+    fs.writeFileSync(TEMPLATES_FILE, JSON.stringify(templates, null, 2), 'utf8');
+  } catch (err) {
+    console.error('saveTemplates failed:', err.message);
+    const e = new Error('Template storage is read-only in this deployment');
+    e.readOnlyStorage = true;
+    throw e;
+  }
+}
+function templateWriteError(res, err) {
+  if (err && err.readOnlyStorage) return res.status(503).json({ error: err.message });
+  console.error(err);
+  return res.status(500).json({ error: err.message });
 }
 
 // List all templates
@@ -137,7 +175,7 @@ app.post('/api/templates', (req, res) => {
     createdAt: new Date().toISOString()
   };
   templates.push(tpl);
-  saveTemplates(templates);
+  try { saveTemplates(templates); } catch (err) { return templateWriteError(res, err); }
   res.json({ ok: true, template: tpl });
 });
 
@@ -152,7 +190,7 @@ app.put('/api/templates/:id', (req, res) => {
   if (pdfBase64 !== undefined) templates[idx].pdfBase64 = pdfBase64;
   if (pdfFileName !== undefined) templates[idx].pdfFileName = pdfFileName;
   templates[idx].updatedAt = new Date().toISOString();
-  saveTemplates(templates);
+  try { saveTemplates(templates); } catch (err) { return templateWriteError(res, err); }
   res.json({ ok: true, template: templates[idx] });
 });
 
@@ -161,7 +199,7 @@ app.delete('/api/templates/:id', (req, res) => {
   const templates = loadTemplates();
   const filtered = templates.filter(t => t.id !== req.params.id);
   if (filtered.length === templates.length) return res.status(404).json({ error: 'Template not found' });
-  saveTemplates(filtered);
+  try { saveTemplates(filtered); } catch (err) { return templateWriteError(res, err); }
   res.json({ ok: true });
 });
 
@@ -217,7 +255,11 @@ function verifyProxySignature(req, res, next) {
   const { signature, ...params } = req.query;
   
   if (!signature) {
-    // Allow direct access (no proxy)
+    // In production (Azure) only Shopify-signed proxy requests are allowed;
+    // locally, unsigned direct access is kept for tunnel/standalone testing.
+    if (process.env.REQUIRE_PROXY_SIGNATURE === '1') {
+      return res.status(401).send('Missing proxy signature');
+    }
     return next();
   }
   
@@ -253,7 +295,7 @@ const needsOAuth = (!TOKEN || TOKEN.startsWith('shpss_')) && CLIENT_ID && CLIENT
 if (needsOAuth) {
   const redirectUri = `${APP_URL}/auth/callback`;
 
-  // Initiate OAuth — Shopify redirects merchant here after clicking "Install"
+  // Initiate OAuth â€” Shopify redirects merchant here after clicking "Install"
   app.get('/auth', (req, res) => {
     const shop = req.query.shop;
     if (!shop) {
@@ -266,7 +308,7 @@ if (needsOAuth) {
     res.redirect(authUrl);
   });
 
-  // OAuth callback — Shopify redirects here after merchant approves
+  // OAuth callback â€” Shopify redirects here after merchant approves
   app.get('/auth/callback', async (req, res) => {
     try {
       const { code, hmac, shop } = req.query;
@@ -353,110 +395,8 @@ async function shopifyGraphQL(query, variables, req) {
   return json.data;
 }
 
-/**
- * Uploads a file to Shopify's Files section using the staged upload flow:
- *   1. stagedUploadsCreate -> get a signed upload URL
- *   2. PUT the file bytes to that URL
- *   3. fileCreate -> register the uploaded file with Shopify, get back a
- *      permanent, publicly reachable URL
- */
-async function uploadPdfToShopify(filename, pdfBuffer, req) {
-  const stagedQuery = `
-    mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
-      stagedUploadsCreate(input: $input) {
-        stagedTargets {
-          url
-          resourceUrl
-          parameters { name value }
-        }
-        userErrors { field message }
-      }
-    }
-  `;
-  const stagedData = await shopifyGraphQL(stagedQuery, {
-    input: [{
-      filename,
-      mimeType: 'application/pdf',
-      httpMethod: 'POST',
-      resource: 'FILE'
-    }]
-  }, req);
-
-  const errs = stagedData.stagedUploadsCreate.userErrors;
-  if (errs && errs.length) throw new Error('stagedUploadsCreate: ' + JSON.stringify(errs));
-
-  const target = stagedData.stagedUploadsCreate.stagedTargets[0];
-
-  // Shopify's staged target expects a multipart/form-data POST with the
-  // given parameters, followed by the file itself.
-  const FormData = require('form-data');
-  const form = new FormData();
-  target.parameters.forEach(p => form.append(p.name, p.value));
-  form.append('file', pdfBuffer, { filename, contentType: 'application/pdf' });
-
-  const uploadRes = await fetch(target.url, { method: 'POST', body: form });
-  if (!uploadRes.ok) {
-    throw new Error('Upload to staged target failed: ' + uploadRes.status + ' ' + await uploadRes.text());
-  }
-
-  const fileCreateQuery = `
-    mutation fileCreate($files: [FileCreateInput!]!) {
-      fileCreate(files: $files) {
-        files {
-          id
-          ... on GenericFile {
-            url
-            alt
-            fileStatus
-          }
-          ... on MediaImage {
-            image { url }
-          }
-        }
-        userErrors { field message }
-      }
-    }
-  `;
-  const fileData = await shopifyGraphQL(fileCreateQuery, {
-    files: [{
-      originalSource: target.resourceUrl,
-      contentType: 'FILE'
-    }]
-  }, req);
-
-  const fileErrs = fileData.fileCreate.userErrors;
-  if (fileErrs && fileErrs.length) throw new Error('fileCreate: ' + JSON.stringify(fileErrs));
-
-  const file = fileData.fileCreate.files[0];
-  console.log('Uploaded file:', JSON.stringify(file, null, 2));
-  return file;
-}
-
-/**
- * Optionally attach the resulting file URL to an order as a metafield so
- * it's visible on the order page in Shopify admin.
- */
-async function attachFileToOrder(orderGid, fileUrl, req) {
-  const mutation = `
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        metafields { id }
-        userErrors { field message }
-      }
-    }
-  `;
-  const data = await shopifyGraphQL(mutation, {
-    metafields: [{
-      ownerId: orderGid,
-      namespace: 'custom',
-      key: 'signed_pdf_url',
-      type: 'url',
-      value: fileUrl
-    }]
-  }, req);
-  const errs = data.metafieldsSet.userErrors;
-  if (errs && errs.length) throw new Error('metafieldsSet: ' + JSON.stringify(errs));
-}
+// Signed PDFs are stored in SharePoint (see sharepoint.js) — the previous
+// Shopify Files staged-upload / order-metafield flow was removed.
 
 // ---------- Utility: Disable store password ----------
 app.post('/api/store/disable-password', async (req, res) => {
@@ -482,37 +422,16 @@ app.post('/api/store/disable-password', async (req, res) => {
   }
 });
 
-// ---------- Save signed PDF to Shopify ----------
-app.post('/api/save-signed-pdf', async (req, res) => {
-  try {
-    const { filename, pdfBase64, shopifyOrderId } = req.body;
-    if (!pdfBase64) return res.status(400).json({ error: 'pdfBase64 is required' });
+// ---------- Save signed PDF (direct route; same handler as the proxy) ----------
+app.post('/api/save-signed-pdf', handleSaveSignedPdf);
 
-    const buffer = Buffer.from(pdfBase64, 'base64');
-    const safeName = (filename || 'signed-document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
-
-    const file = await uploadPdfToShopify(safeName, buffer, req);
-    const fileUrl = file.url || (file.preview && file.preview.image && file.preview.image.url) || null;
-
-    if (shopifyOrderId) {
-      // shopifyOrderId can be a numeric id or a full gid://shopify/Order/... string
-      const gid = String(shopifyOrderId).startsWith('gid://')
-        ? shopifyOrderId
-        : `gid://shopify/Order/${shopifyOrderId}`;
-      if (fileUrl) await attachFileToOrder(gid, fileUrl, req);
-    }
-
-    res.json({ ok: true, fileId: file.id, fileUrl });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-const PORT = process.env.PORT || 3001;
+// Azure Functions custom handler passes the port to listen on via
+// FUNCTIONS_CUSTOMHANDLER_PORT; locally we fall back to PORT/3001.
+const PORT = process.env.FUNCTIONS_CUSTOMHANDLER_PORT || process.env.PORT || 3001;
+const IN_AZURE = !!(process.env.FUNCTIONS_CUSTOMHANDLER_PORT || process.env.WEBSITE_HOSTNAME);
 app.listen(PORT, () => {
   console.log(`Shopify signed-PDF backend listening on :${PORT}`);
-  startTunnel();
+  if (!IN_AZURE && process.env.DISABLE_TUNNEL !== '1') startTunnel();
 });
 
 // ---------- Auto-start localtunnel (dev/testing) ----------
@@ -522,7 +441,7 @@ async function startTunnel() {
     const subdomain = process.env.TUNNEL_SUBDOMAIN || 'yog-pdf-forms';
     
     const tunnel = await localtunnel({ port: PORT, subdomain });
-    console.log(`\n🌐 Public tunnel: ${tunnel.url}\n`);
+    console.log(`\nðŸŒ Public tunnel: ${tunnel.url}\n`);
     
     tunnel.on('close', () => {
       console.log('Tunnel closed. Restarting in 5s...');
