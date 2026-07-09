@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Template Designer</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f0; color: #1c2b2d; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+/* header */
+.toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #fff; border-bottom: 1px solid #ddd; flex-shrink: 0; }
+.toolbar h1 { font-size: 18px; font-weight: 700; margin-right: auto; }
+.toolbar .sep { width: 1px; height: 28px; background: #ddd; }
+.toolbar button { padding: 7px 14px; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.toolbar button:hover { background: #f0f0f0; }
+.toolbar button.accent { background: #1c2b2d; color: #fff; border-color: #1c2b2d; }
+.toolbar button.accent:hover { background: #2d4245; }
+.toolbar button.danger { color: #b3452f; border-color: #b3452f; }
+.toolbar select { padding: 7px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; background: #fff; }
+
+/* layout */
+.workspace { display: flex; flex: 1; overflow: hidden; }
+.sidebar { width: 260px; background: #fff; border-right: 1px solid #ddd; padding: 14px; overflow-y: auto; flex-shrink: 0; display: flex; flex-direction: column; gap: 14px; }
+.sidebar h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #888; margin-bottom: 4px; }
+.pdf-area { flex: 1; overflow: auto; position: relative; background: #e8e8e0; display: flex; align-items: center; justify-content: center; }
+.pdf-container { position: relative; display: inline-block; box-shadow: 0 4px 24px rgba(0,0,0,.15); margin: 20px; }
+.pdf-container canvas { display: block; }
+.field-overlay { position: absolute; border: 2px dashed #1c2b2d; background: rgba(28,43,45,0.08); cursor: move; border-radius: 3px; min-width: 60px; min-height: 24px; }
+.field-overlay.selected { border-style: solid; border-color: #0066cc; background: rgba(0,102,204,0.08); z-index: 10; }
+.field-overlay:hover { border-color: #0066cc; }
+.field-overlay .field-label { font-size: 11px; color: #666; padding: 2px 4px; pointer-events: none; white-space: nowrap; overflow: hidden; }
+.field-overlay.signature { background: rgba(179,69,47,0.08); border-color: #b3452f; border-style: dotted; }
+.field-overlay.signature .field-label { color: #b3452f; }
+.field-overlay .resize-handle { position: absolute; right: -4px; bottom: -4px; width: 10px; height: 10px; background: #0066cc; border-radius: 2px; cursor: nwse-resize; display: none; }
+.field-overlay.selected .resize-handle { display: block; }
+
+/* field type buttons */
+.field-types { display: flex; flex-direction: column; gap: 6px; }
+.field-type-btn { display: flex; align-items: center; gap: 8px; padding: 10px; border: 2px solid #eee; border-radius: 8px; cursor: pointer; font-size: 13px; background: #fff; text-align: left; width: 100%; }
+.field-type-btn:hover { border-color: #ccc; }
+.field-type-btn.active { border-color: #1c2b2d; background: #f0f4f4; }
+.field-type-btn .icon { font-size: 20px; width: 32px; text-align: center; flex-shrink: 0; }
+
+/* properties */
+.prop-group { display: flex; flex-direction: column; gap: 6px; }
+.prop-group label { font-size: 12px; color: #666; font-weight: 500; }
+.prop-group input, .prop-group select { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; width: 100%; }
+.prop-group input[type="checkbox"] { width: auto; }
+
+/* status */
+.status-bar { padding: 6px 16px; background: #fff; border-top: 1px solid #ddd; font-size: 12px; color: #888; flex-shrink: 0; }
+
+/* empty state */
+.empty-state { text-align: center; color: #999; padding: 40px; }
+.empty-state .glyph { font-size: 48px; margin-bottom: 12px; }
+
+/* file upload area */
+.file-drop { display: block; padding: 24px; border: 2px dashed #ccc; border-radius: 8px; text-align: center; cursor: pointer; color: #888; font-size: 13px; transition: border-color .2s; }
+.file-drop:hover { border-color: #999; }
+.file-drop input { display: none; }
+.file-drop.active { border-color: #1c2b2d; color: #1c2b2d; }
+
+/* Shopify embedded mode */
+body.shopify-embedded { border-radius: 8px; overflow: hidden; }
+body.shopify-embedded .toolbar { border-radius: 8px 8px 0 0; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <h1>📐 Template Designer</h1>
+  <button onclick="loadPdfDialog()">📄 Load PDF</button>
+  <span class="sep"></span>
+  <select id="templateSelect" onchange="loadTemplate(this.value)" style="min-width:180px;">
+    <option value="">-- Load template --</option>
+  </select>
+  <input type="text" id="templateName" placeholder="Template name" style="padding:7px;border:1px solid #ccc;border-radius:6px;font-size:13px;width:180px;">
+  <button class="accent" onclick="saveTemplate()">💾 Save Template</button>
+  <button onclick="shareTemplate()" style="display:none;" id="shareBtn">🔗 Share</button>
+  <button onclick="previewAsCustomer()" style="display:none;" id="previewBtn">👁️ Preview</button>
+  <button class="danger" onclick="deleteTemplate()" style="display:none;" id="deleteBtn">🗑 Delete</button>
+</div>
+
+<div class="workspace">
+  <aside class="sidebar">
+    <div>
+      <h3>Field Types</h3>
+      <div class="field-types">
+        <button class="field-type-btn active" data-type="text" onclick="selectTool('text', this)">
+          <span class="icon">🔤</span> Text Input
+        </button>
+        <button class="field-type-btn" data-type="signature" onclick="selectTool('signature', this)">
+          <span class="icon">✍️</span> Signature Box
+        </button>
+        <button class="field-type-btn" data-type="label" onclick="selectTool('label', this)">
+          <span class="icon">🏷️</span> Static Label
+        </button>
+        <button class="field-type-btn" data-type="move" onclick="selectTool('move', this)">
+          <span class="icon">✋</span> Select / Move
+        </button>
+      </div>
+    </div>
+
+    <div id="fieldProps" style="display:none;">
+      <h3>Field Properties</h3>
+      <div class="prop-group">
+        <label>Label</label>
+        <input type="text" id="propLabel" onchange="updateSelectedField()" placeholder="Field label">
+        <label>Placeholder (text inputs)</label>
+        <input type="text" id="propPlaceholder" onchange="updateSelectedField()" placeholder="Placeholder text">
+        <label>Font Size</label>
+        <input type="number" id="propFontSize" min="8" max="48" value="14" onchange="updateSelectedField()">
+        <label><input type="checkbox" id="propRequired" onchange="updateSelectedField()"> Required field</label>
+        <button onclick="deleteSelectedField()" style="margin-top:6px;color:#b3452f;background:none;border:1px solid #b3452f;border-radius:4px;padding:5px;cursor:pointer;font-size:12px;">🗑 Remove Field</button>
+      </div>
+    </div>
+
+    <div>
+      <h3>Instructions</h3>
+      <p style="font-size:12px;color:#888;line-height:1.5;">
+        1. Load a PDF form<br>
+        2. Pick a field type from above<br>
+        3. Click on the PDF to place it<br>
+        4. Drag fields to reposition<br>
+        5. Click a field to edit its properties<br>
+        6. Save your template
+      </p>
+    </div>
+  </aside>
+
+  <main class="pdf-area" id="pdfArea">
+    <div class="empty-state" id="emptyState">
+      <div class="glyph">📄</div>
+      <div>Load a PDF form to start designing your template.</div>
+    </div>
+    <div class="pdf-container" id="pdfContainer" style="display:none;">
+      <canvas id="pdfCanvas"></canvas>
+    </div>
+  </main>
+</div>
+
+<div class="status-bar" id="statusBar">Ready</div>
+
+<!-- Hidden file input -->
+<input type="file" id="fileInput" accept="application/pdf" style="display:none;" onchange="handlePdfUpload(event)">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ---------- Shopify App Bridge (embedded admin) ----------
+let isShopifyEmbedded = false;
+let appBridge = null;
+
+(function initAppBridge() {
+  // Detect if loaded inside Shopify admin (URL has hmac param, or we're in an iframe)
+  const params = new URLSearchParams(location.search);
+  const isInIframe = window !== window.top;
+  
+  if (params.has('hmac') || params.has('shop') || (isInIframe && params.has('host'))) {
+    isShopifyEmbedded = true;
+    
+    // Initialize App Bridge
+    if (window.shopify && window.shopify.load) {
+      const host = new URLSearchParams(location.search).get('host') || '';
+      window.shopify.load({
+        apiKey: '', // Will be set by the session token approach
+        host: host ? atob(host) : undefined,
+        forceRedirect: false
+      }).then(function(bridge) {
+        appBridge = bridge;
+        console.log('Shopify App Bridge initialized');
+      }).catch(function(err) {
+        console.warn('App Bridge init failed, running standalone:', err);
+        isShopifyEmbedded = false;
+      });
+    }
+    
+    // Adjust layout for iframe (hide top-level toolbar, let Shopify chrome handle it)
+    document.body.classList.add('shopify-embedded');
+  }
+})();
+
+// ---------- State ----------
+let pdfDoc = null;
+let currentPage = 1;
+let currentTool = 'text';
+let selectedField = null;
+let fields = [];
+let currentTemplateId = null;
+let pdfBase64 = '';
+let pdfFileName = '';
+
+const canvas = document.getElementById('pdfCanvas');
+const container = document.getElementById('pdfContainer');
+const emptyState = document.getElementById('emptyState');
+const statusEl = document.getElementById('statusBar');
+const fieldProps = document.getElementById('fieldProps');
+
+function setStatus(msg) { statusEl.textContent = msg; }
+
+// ---------- Tool selection ----------
+function selectTool(tool, btn) {
+  currentTool = tool;
+  document.querySelectorAll('.field-type-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  deselectField();
+  setStatus(`Tool: ${tool === 'move' ? 'Select/Move' : tool === 'signature' ? 'Signature Box' : tool === 'label' ? 'Static Label' : 'Text Input'}`);
+}
+
+// ---------- PDF loading ----------
+function loadPdfDialog() { document.getElementById('fileInput').click(); }
+
+async function handlePdfUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  pdfFileName = file.name;
+  setStatus(`Loading ${file.name}…`);
+
+  // Read as base64 for storage
+  const reader = new FileReader();
+  reader.onload = async (ev) => {
+    pdfBase64 = ev.target.result.split(',')[1];
+    const bytes = new Uint8Array(ev.target.result.split(',')[1] ? atob(pdfBase64).split('').map(c => c.charCodeAt(0)) : []);
+    // Also read arrayBuffer for pdf.js
+    const ab = await file.arrayBuffer();
+    renderPdf(ab);
+  };
+  reader.readAsDataURL(file);
+}
+
+async function renderPdf(data) {
+  pdfDoc = await pdfjsLib.getDocument({ data }).promise;
+  emptyState.style.display = 'none';
+  container.style.display = 'inline-block';
+  clearFields();
+  await renderPage(currentPage);
+  setStatus(`Loaded "${pdfFileName}" — ${pdfDoc.numPages} page(s). Add fields by clicking on the PDF.`);
+}
+
+async function renderPage(num) {
+  currentPage = num;
+  const page = await pdfDoc.getPage(num);
+  const viewport = page.getViewport({ scale: 1.5 });
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  // Re-render field overlays on top
+  renderFieldOverlays();
+}
+
+function renderFieldOverlays() {
+  // Remove existing overlays
+  container.querySelectorAll('.field-overlay').forEach(el => el.remove());
+  // Create new overlays
+  fields.forEach((f, i) => {
+    const div = document.createElement('div');
+    div.className = 'field-overlay' + (f.type === 'signature' ? ' signature' : '') + (selectedField === i ? ' selected' : '');
+    div.style.left = f.x + 'px';
+    div.style.top = f.y + 'px';
+    div.style.width = (f.w || 160) + 'px';
+    div.style.height = (f.h || 32) + 'px';
+    div.innerHTML = `<span class="field-label">${f.label || f.type}</span><div class="resize-handle"></div>`;
+    div.addEventListener('mousedown', (e) => onFieldMouseDown(e, i));
+    div.querySelector('.resize-handle').addEventListener('mousedown', (e) => onResizeMouseDown(e, i));
+    container.appendChild(div);
+  });
+}
+
+// ---------- Field placement ----------
+canvas.addEventListener('click', (e) => {
+  if (currentTool === 'move') return;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const field = {
+    type: currentTool,
+    x: Math.round(x),
+    y: Math.round(y),
+    w: currentTool === 'signature' ? 250 : 160,
+    h: currentTool === 'signature' ? 80 : 32,
+    label: currentTool === 'signature' ? 'Signature' : currentTool === 'label' ? 'Label' : 'Text Field',
+    placeholder: '',
+    fontSize: 14,
+    required: false
+  };
+  fields.push(field);
+  renderFieldOverlays();
+  selectField(fields.length - 1);
+  setStatus(`Added ${field.type} field. Total: ${fields.length} field(s).`);
+});
+
+// ---------- Field selection ----------
+function selectField(idx) {
+  selectedField = idx;
+  fieldProps.style.display = 'block';
+  const f = fields[idx];
+  document.getElementById('propLabel').value = f.label || '';
+  document.getElementById('propPlaceholder').value = f.placeholder || '';
+  document.getElementById('propFontSize').value = f.fontSize || 14;
+  document.getElementById('propRequired').checked = f.required || false;
+  renderFieldOverlays();
+}
+
+function deselectField() {
+  selectedField = null;
+  fieldProps.style.display = 'none';
+  renderFieldOverlays();
+}
+
+function updateSelectedField() {
+  if (selectedField === null) return;
+  const f = fields[selectedField];
+  f.label = document.getElementById('propLabel').value;
+  f.placeholder = document.getElementById('propPlaceholder').value;
+  f.fontSize = parseInt(document.getElementById('propFontSize').value) || 14;
+  f.required = document.getElementById('propRequired').checked;
+  renderFieldOverlays();
+}
+
+function deleteSelectedField() {
+  if (selectedField === null) return;
+  fields.splice(selectedField, 1);
+  deselectField();
+  renderFieldOverlays();
+  setStatus('Field removed.');
+}
+
+// ---------- Field dragging ----------
+let dragIdx = null, dragStartX, dragStartY, fieldStartX, fieldStartY, isDragging = false, isResizing = false;
+
+function onFieldMouseDown(e, idx) {
+  if (e.target.classList.contains('resize-handle')) return;
+  e.preventDefault();
+  if (currentTool !== 'move') {
+    selectField(idx);
+    return;
+  }
+  selectField(idx);
+  dragIdx = idx;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  fieldStartX = fields[idx].x;
+  fieldStartY = fields[idx].y;
+  isDragging = true;
+}
+
+function onResizeMouseDown(e, idx) {
+  e.preventDefault();
+  e.stopPropagation();
+  selectField(idx);
+  dragIdx = idx;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  fieldStartX = fields[idx].w;
+  fieldStartY = fields[idx].h;
+  isResizing = true;
+}
+
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging && !isResizing) return;
+  const dx = e.clientX - dragStartX;
+  const dy = e.clientY - dragStartY;
+  if (isResizing) {
+    fields[dragIdx].w = Math.max(60, fieldStartX + dx);
+    fields[dragIdx].h = Math.max(24, fieldStartY + dy);
+  } else {
+    fields[dragIdx].x = Math.round(fieldStartX + dx);
+    fields[dragIdx].y = Math.round(fieldStartY + dy);
+  }
+  renderFieldOverlays();
+});
+
+document.addEventListener('mouseup', () => { isDragging = false; isResizing = false; dragIdx = null; });
+
+// ---------- Field cleanup ----------
+function clearFields() {
+  fields = [];
+  selectedField = null;
+  fieldProps.style.display = 'none';
+  renderFieldOverlays();
+}
+
+// ---------- Save template ----------
+async function saveTemplate() {
+  const name = document.getElementById('templateName').value.trim();
+  if (!name) { alert('Please enter a template name.'); return; }
+  if (!pdfBase64) { alert('Please load a PDF first.'); return; }
+
+  setStatus('Saving template…');
+  const method = currentTemplateId ? 'PUT' : 'POST';
+  const url = currentTemplateId ? `/api/templates/${currentTemplateId}` : '/api/templates';
+  const body = { name, pdfFileName, pdfBase64, fields };
+
+  const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) { setStatus('Error: ' + (data.error || res.status)); return; }
+
+  currentTemplateId = data.template.id;
+  document.getElementById('deleteBtn').style.display = 'inline-block';
+  document.getElementById('shareBtn').style.display = 'inline-block';
+  document.getElementById('previewBtn').style.display = 'inline-block';
+  await refreshTemplateList();
+  setStatus(`Template "${name}" saved! (ID: ${currentTemplateId})`);
+}
+
+// ---------- Share / Preview ----------
+function shareTemplate() {
+  if (!currentTemplateId) return;
+  // In App Proxy, the customer-facing URL is under the store domain
+  // Direct link still works for standalone mode
+  const directLink = `${location.origin}/form?id=${currentTemplateId}`;
+  
+  // For Shopify stores, the proxy URL is cleaner:
+  // {store}.myshopify.com/apps/pdf-signer/form?id=xxx
+  const storeDomain = new URLSearchParams(location.search).get('shop');
+  const proxyLink = storeDomain 
+    ? `https://${storeDomain}/apps/pdf-signer/form?id=${currentTemplateId}`
+    : directLink;
+  
+  const link = proxyLink;
+  
+  if (isShopifyEmbedded && appBridge) {
+    // Use App Bridge to copy or show link
+    navigator.clipboard.writeText(link).then(() => {
+      setStatus(`📋 Customer link copied! ${link}`);
+    }).catch(() => {
+      setStatus(`📋 Customer link: ${link}`);
+    });
+  } else {
+    navigator.clipboard.writeText(link).then(() => {
+      setStatus(`📋 Customer link copied! ${link}`);
+    }).catch(() => {
+      prompt('Copy this link for customers:', link);
+    });
+  }
+}
+
+function previewAsCustomer() {
+  if (!currentTemplateId) return;
+  const directLink = `/form?id=${currentTemplateId}`;
+  const storeDomain = new URLSearchParams(location.search).get('shop');
+  const proxyLink = storeDomain 
+    ? `https://${storeDomain}/apps/pdf-signer/form?id=${currentTemplateId}`
+    : directLink;
+  
+  if (isShopifyEmbedded && appBridge) {
+    // In Shopify admin, use App Bridge to open a new tab
+    window.open(proxyLink, '_blank');
+  } else {
+    window.open(proxyLink, '_blank');
+  }
+}
+
+// ---------- Load template ----------
+async function loadTemplate(id) {
+  if (!id) return;
+  setStatus('Loading template…');
+  const res = await fetch(`/api/templates/${id}`);
+  const tpl = await res.json();
+  if (!res.ok) { setStatus('Error loading template.'); return; }
+
+  currentTemplateId = tpl.id;
+  document.getElementById('templateName').value = tpl.name;
+  document.getElementById('deleteBtn').style.display = 'inline-block';
+  document.getElementById('shareBtn').style.display = 'inline-block';
+  document.getElementById('previewBtn').style.display = 'inline-block';
+  pdfFileName = tpl.pdfFileName;
+  pdfBase64 = tpl.pdfBase64;
+  fields = tpl.fields || [];
+  selectedField = null;
+  fieldProps.style.display = 'none';
+
+  // Render PDF from stored base64
+  if (tpl.pdfBase64) {
+    const binary = atob(tpl.pdfBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    await renderPdf(bytes.buffer);
+  }
+  document.getElementById('templateSelect').value = id;
+  setStatus(`Loaded template "${tpl.name}" — ${fields.length} field(s).`);
+}
+
+async function deleteTemplate() {
+  if (!currentTemplateId) return;
+  if (!confirm('Delete this template?')) return;
+  await fetch(`/api/templates/${currentTemplateId}`, { method: 'DELETE' });
+  currentTemplateId = null;
+  document.getElementById('templateName').value = '';
+  document.getElementById('deleteBtn').style.display = 'none';
+  await refreshTemplateList();
+  setStatus('Template deleted.');
+}
+
+async function refreshTemplateList() {
+  const res = await fetch('/api/templates');
+  const templates = await res.json();
+  const sel = document.getElementById('templateSelect');
+  sel.innerHTML = '<option value="">-- Load template --</option>';
+  templates.forEach(t => {
+    sel.innerHTML += `<option value="${t.id}">${t.name} (${t.fieldCount} fields)</option>`;
+  });
+}
+
+// ---------- Init ----------
+refreshTemplateList();
+canvas.addEventListener('mousedown', (e) => {
+  // Clicking on blank canvas area deselects
+  if (e.target === canvas && currentTool === 'move') deselectField();
+});
+</script>
+</body>
+</html>

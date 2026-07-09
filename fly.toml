@@ -1,0 +1,21 @@
+app = "shopify-pdf-signer"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3001"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 3001
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]

@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fill &amp; Sign Form</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f0eb; color: #1c2b2d; display: flex; flex-direction: column; min-height: 100vh; }
+
+/* Header */
+.header { background: #fff; padding: 14px 24px; border-bottom: 1px solid #ddd; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+.header h1 { font-size: 18px; font-weight: 700; flex: 1; }
+.header .template-name { font-size: 14px; color: #666; }
+
+/* Layout */
+.main { display: flex; flex: 1; overflow: hidden; }
+.pdf-panel { flex: 1; overflow: auto; position: relative; display: flex; align-items: center; justify-content: center; background: #e0e0d8; padding: 20px; }
+.form-panel { width: 320px; background: #fff; border-left: 1px solid #ddd; padding: 20px; overflow-y: auto; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
+.form-panel h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #888; }
+
+/* PDF container */
+.pdf-wrapper { position: relative; display: inline-block; box-shadow: 0 4px 28px rgba(0,0,0,.18); }
+.pdf-wrapper canvas { display: block; }
+
+/* Overlay inputs positioned on PDF */
+.field-input { position: absolute; border: 2px solid #0066cc; background: rgba(255,255,255,0.92); border-radius: 4px; font-size: 14px; padding: 4px 8px; font-family: inherit; outline: none; }
+.field-input:focus { border-color: #004499; background: #fff; box-shadow: 0 0 0 3px rgba(0,102,204,0.15); }
+.field-input.required { border-color: #b3452f; }
+.field-input.signature { border: 2px dotted #b3452f; background: rgba(255,245,240,0.92); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #b3452f; overflow: hidden; }
+.field-input.signature img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.field-label-overlay { position: absolute; font-size: 10px; color: #0066cc; font-weight: 600; pointer-events: none; }
+
+/* Sidebar form fields */
+.field-card { padding: 12px; border: 1px solid #eee; border-radius: 8px; background: #fafafa; }
+.field-card label { font-size: 12px; font-weight: 600; color: #444; display: block; margin-bottom: 4px; }
+.field-card label .req { color: #b3452f; }
+.field-card input[type="text"] { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+.field-card input[type="text"]:focus { outline: none; border-color: #0066cc; }
+
+/* Signature pad */
+.sig-pad { border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: crosshair; }
+.sig-actions { display: flex; gap: 8px; margin-top: 8px; }
+.sig-actions button { flex: 1; padding: 6px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; font-size: 12px; }
+.sig-actions button:hover { background: #f0f0f0; }
+
+/* Buttons */
+.btn { padding: 10px 20px; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
+.btn-primary { background: #1c2b2d; color: #fff; width: 100%; }
+.btn-primary:hover { background: #2d4245; }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-outline { background: #fff; color: #1c2b2d; border: 1px solid #ccc; }
+
+/* Status */
+.success { background: #e8f5e9; color: #2e7d32; padding: 14px; border-radius: 8px; text-align: center; font-size: 14px; }
+.error { background: #fce4e4; color: #b3452f; padding: 14px; border-radius: 8px; text-align: center; font-size: 14px; }
+.status { font-size: 13px; color: #888; text-align: center; }
+
+/* Loading */
+.loading { text-align: center; padding: 60px; color: #888; }
+.spinner { width: 32px; height: 32px; border: 3px solid #ddd; border-top-color: #1c2b2d; border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 12px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📝 <span id="formTitle">Fill &amp; Sign</span></h1>
+  <span class="template-name" id="templateInfo"></span>
+</div>
+
+<div class="main">
+  <div class="pdf-panel" id="pdfPanel">
+    <div class="loading" id="loadingState">
+      <div class="spinner"></div>
+      <div id="loadingMsg">Loading form…</div>
+    </div>
+    <div class="pdf-wrapper" id="pdfWrapper" style="display:none;">
+      <canvas id="pdfCanvas"></canvas>
+    </div>
+  </div>
+
+  <aside class="form-panel" id="formPanel">
+    <div id="sidebarFields"></div>
+    <div id="signatureArea" style="display:none;">
+      <h3>Signature</h3>
+      <canvas class="sig-pad" id="sigPad" width="280" height="120"></canvas>
+      <div class="sig-actions">
+        <button onclick="clearSignature()">Clear</button>
+      </div>
+      <label style="font-size:12px;margin-top:6px;display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="agreeTerms"> I confirm this information is accurate
+      </label>
+    </div>
+    <button class="btn btn-primary" id="submitBtn" disabled onclick="submitForm()">Submit Signed Form</button>
+    <div class="status" id="formStatus"></div>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ---------- Detect proxy vs direct mode ----------
+// When loaded via Shopify App Proxy (under store domain),
+// the URL is {store}.myshopify.com/apps/pdf-signer/form?id=xxx
+// API calls need to go through the same proxy prefix.
+let apiBase = '/api'; // Default direct mode
+
+(function detectProxyMode() {
+  const path = location.pathname;
+  if (path.startsWith('/apps/pdf-signer/')) {
+    // Running under Shopify App Proxy
+    apiBase = '/apps/pdf-signer/api';
+    console.log('Proxy mode detected, API base:', apiBase);
+  }
+})();
+
+// ---------- State ----------
+let template = null;
+let pdfDoc = null;
+let signatureImage = null;
+let fieldValues = {};   // Map of field index → value
+let sigFieldIdx = -1;   // Which field index is the signature
+
+const canvas = document.getElementById('pdfCanvas');
+const wrapper = document.getElementById('pdfWrapper');
+const loadingState = document.getElementById('loadingState');
+const loadingMsg = document.getElementById('loadingMsg');
+
+// ---------- Load template ----------
+async function init() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const templateId = params.get('id');
+    
+    if (!templateId) {
+      showLoadError('No template specified. Add ?id=TEMPLATE_ID to the URL.');
+      return;
+    }
+
+    loadingMsg.textContent = 'Loading template…';
+    
+    // Set a safety timeout for the ENTIRE loading process — if anything
+    // hangs (fetch, PDF decode, rendering), show a visible error after 15s
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      showLoadError('Loading is taking longer than expected. Please refresh the page to try again.');
+    }, 15000);
+
+    let res;
+    try {
+      res = await fetch(apiBase + '/templates/' + templateId);
+    } catch (fetchErr) {
+      if (timedOut) return;
+      clearTimeout(timeout);
+      showLoadError('Unable to connect. Please check your connection and try again.');
+      return;
+    }
+    
+    if (timedOut) return;
+    
+    if (!res.ok) {
+      clearTimeout(timeout);
+      if (res.status === 404) {
+        showLoadError('Template not found. The form you are looking for may have been removed.');
+      } else {
+        showLoadError('Failed to load template (HTTP ' + res.status + '). Please try again.');
+      }
+      return;
+    }
+    template = await res.json();
+    
+    if (timedOut) return;
+    
+    if (!template || !template.name) {
+      clearTimeout(timeout);
+      showLoadError('Invalid template data received.');
+      return;
+    }
+    
+    document.getElementById('formTitle').textContent = template.name;
+    document.getElementById('templateInfo').textContent = `${(template.fields || []).length} field(s)`;
+    document.title = template.name + ' — Fill & Sign';
+
+    // Render PDF
+    if (template.pdfBase64) {
+      try {
+        loadingMsg.textContent = 'Decoding PDF…';
+        const binary = atob(template.pdfBase64);
+        if (timedOut) return;
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        if (timedOut) return;
+        loadingMsg.textContent = 'Rendering PDF…';
+        await renderPdf(bytes.buffer);
+        if (timedOut) return;
+        loadingMsg.textContent = 'Building form…';
+      } catch (pdfErr) {
+        if (timedOut) return;
+        clearTimeout(timeout);
+        console.error('PDF render error:', pdfErr);
+        showLoadError('Failed to render the form PDF. The template may be corrupted.');
+        return;
+      }
+    } else {
+      clearTimeout(timeout);
+      showLoadError('This template has no PDF attached.');
+      return;
+    }
+
+    if (timedOut) return;
+    clearTimeout(timeout);
+
+    // Build form UI
+    buildFormFields();
+    buildOverlayFields();
+    
+    loadingState.style.display = 'none';
+    wrapper.style.display = 'inline-block';
+    checkSubmitReady();
+  } catch (err) {
+    console.error('Init error:', err);
+    showLoadError('Unable to load the form. Please check your connection and try again.');
+  }
+}
+
+function showLoadError(message) {
+  loadingMsg.textContent = message;
+  loadingMsg.style.color = '#b3452f';
+  const spinner = loadingState.querySelector('.spinner');
+  if (spinner) spinner.style.display = 'none';
+}
+
+// ---------- Render PDF ----------
+async function renderPdf(data) {
+  pdfDoc = await pdfjsLib.getDocument({ data }).promise;
+  const page = await pdfDoc.getPage(1);
+  const viewport = page.getViewport({ scale: 1.5 });
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+}
+
+// ---------- Build sidebar form fields ----------
+function buildFormFields() {
+  const container = document.getElementById('sidebarFields');
+  container.innerHTML = '';
+  
+  template.fields.forEach((f, i) => {
+    if (f.type === 'signature') {
+      sigFieldIdx = i;
+      document.getElementById('signatureArea').style.display = 'block';
+      initSignaturePad();
+      return;
+    }
+    if (f.type === 'label') {
+      // Labels are static, no input needed
+      return;
+    }
+    // Text field
+    const card = document.createElement('div');
+    card.className = 'field-card';
+    card.innerHTML = `
+      <label>${f.label || 'Field'} ${f.required ? '<span class="req">*</span>' : ''}</label>
+      <input type="text" placeholder="${f.placeholder || f.label || ''}" data-field="${i}" value="">
+    `;
+    container.appendChild(card);
+
+    // Sync input to overlay and state
+    const input = card.querySelector('input');
+    input.addEventListener('input', () => {
+      fieldValues[i] = input.value;
+      syncOverlay(i, input.value);
+      checkSubmitReady();
+    });
+  });
+
+  if (!template.fields.some(f => f.type === 'text')) {
+    container.innerHTML = '<p style="color:#888;font-size:13px;">No text fields in this template.</p>';
+  }
+}
+
+// ---------- Build overlay fields on PDF ----------
+function buildOverlayFields() {
+  template.fields.forEach((f, i) => {
+    if (f.type === 'label') {
+      // Render static label overlay
+      const lbl = document.createElement('div');
+      lbl.className = 'field-label-overlay';
+      lbl.style.left = f.x + 'px';
+      lbl.style.top = (f.y - 14) + 'px';
+      lbl.textContent = f.label || '';
+      wrapper.appendChild(lbl);
+      return;
+    }
+
+    const el = document.createElement(f.type === 'signature' ? 'div' : 'input');
+    if (f.type === 'text') {
+      el.type = 'text';
+      el.placeholder = f.placeholder || f.label || '';
+      el.addEventListener('input', () => {
+        fieldValues[i] = el.value;
+        syncSidebar(i, el.value);
+        checkSubmitReady();
+      });
+    }
+    el.className = 'field-input' + (f.type === 'signature' ? ' signature' : '') + (f.required ? ' required' : '');
+    el.style.left = f.x + 'px';
+    el.style.top = f.y + 'px';
+    el.style.width = (f.w || 160) + 'px';
+    el.style.height = (f.h || 32) + 'px';
+    el.style.fontSize = (f.fontSize || 14) + 'px';
+    el.dataset.field = i;
+
+    if (f.type === 'signature') {
+      el.textContent = 'Click to sign';
+      el.addEventListener('click', () => scrollToSignature());
+    }
+
+    wrapper.appendChild(el);
+  });
+}
+
+function syncOverlay(idx, value) {
+  const el = wrapper.querySelector(`[data-field="${idx}"]`);
+  if (el && el.tagName === 'INPUT') el.value = value;
+}
+
+function syncSidebar(idx, value) {
+  const input = document.querySelector(`#sidebarFields input[data-field="${idx}"]`);
+  if (input) input.value = value;
+}
+
+function scrollToSignature() {
+  document.getElementById('signatureArea').scrollIntoView({ behavior: 'smooth' });
+}
+
+// ---------- Signature pad ----------
+function initSignaturePad() {
+  const pad = document.getElementById('sigPad');
+  const ctx = pad.getContext('2d');
+  let drawing = false;
+
+  pad.addEventListener('mousedown', (e) => { drawing = true; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); });
+  pad.addEventListener('mousemove', (e) => {
+    if (!drawing) return;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#1c2b2d';
+    ctx.lineTo(e.offsetX, e.offsetY);
+    ctx.stroke();
+  });
+  pad.addEventListener('mouseup', () => { drawing = false; captureSignature(); checkSubmitReady(); });
+  pad.addEventListener('mouseleave', () => { drawing = false; captureSignature(); checkSubmitReady(); });
+
+  // Touch support
+  pad.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const rect = pad.getBoundingClientRect();
+    const t = e.touches[0];
+    drawing = true;
+    ctx.beginPath();
+    ctx.moveTo(t.clientX - rect.left, t.clientY - rect.top);
+  });
+  pad.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (!drawing) return;
+    const rect = pad.getBoundingClientRect();
+    const t = e.touches[0];
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#1c2b2d';
+    ctx.lineTo(t.clientX - rect.left, t.clientY - rect.top);
+    ctx.stroke();
+  });
+  pad.addEventListener('touchend', () => { drawing = false; captureSignature(); checkSubmitReady(); });
+}
+
+function captureSignature() {
+  const pad = document.getElementById('sigPad');
+  signatureImage = pad.toDataURL('image/png');
+  
+  // Update overlay
+  if (sigFieldIdx >= 0) {
+    const overlay = wrapper.querySelector(`[data-field="${sigFieldIdx}"]`);
+    if (overlay) {
+      overlay.innerHTML = signatureImage ? '<img src="' + signatureImage + '" alt="Signature">' : 'Click to sign';
+    }
+  }
+}
+
+function clearSignature() {
+  const pad = document.getElementById('sigPad');
+  const ctx = pad.getContext('2d');
+  ctx.clearRect(0, 0, pad.width, pad.height);
+  signatureImage = null;
+  captureSignature();
+  checkSubmitReady();
+}
+
+// ---------- Submit ----------
+function checkSubmitReady() {
+  const btn = document.getElementById('submitBtn');
+  const allRequired = template.fields.every((f, i) => {
+    if (!f.required) return true;
+    if (f.type === 'signature') return !!signatureImage;
+    if (f.type === 'label') return true;
+    return !!(fieldValues[i] || '').trim();
+  });
+  btn.disabled = !allRequired;
+}
+
+async function submitForm() {
+  const status = document.getElementById('formStatus');
+  status.innerHTML = '<div class="spinner"></div> Flattening & sending…';
+  document.getElementById('submitBtn').disabled = true;
+
+  try {
+    // Load PDF with pdf-lib
+    const pdfBytes = Uint8Array.from(atob(template.pdfBase64), c => c.charCodeAt(0));
+    const pdf = await PDFLib.PDFDocument.load(pdfBytes);
+    const pages = pdf.getPages();
+    const page = pages[0];
+    const { width: pw, height: ph } = page.getSize();
+
+    // Calculate scale factor (pdf.js renders at 1.5x, pdf-lib uses PDF points @72dpi)
+    const pdfWidth = canvas.width / 1.5;  // This is approximate
+    const scale = pw / (canvas.width / 1.5);  // PDF points per canvas pixel
+    
+    // Actually, let's use a different approach. pdf-lib works in PDF points.
+    // The canvas is rendered at 1.5 scale. So canvas coordinates / 1.5 = PDF coordinates in px at 72dpi.
+    // Then PDF points = those coordinates (since PDF uses 72dpi).
+    const canvasScale = 1.5;
+
+    // Add text for each text field
+    for (let i = 0; i < template.fields.length; i++) {
+      const f = template.fields[i];
+      if (f.type === 'text' && fieldValues[i]) {
+        const x = f.x / canvasScale;
+        const y = ph - (f.y / canvasScale) - (f.h / canvasScale) - 2; // Flip Y axis for PDF coordinates
+        page.drawText(fieldValues[i], {
+          x, y,
+          size: f.fontSize || 14,
+          color: PDFLib.rgb(0.11, 0.17, 0.18),
+        });
+      }
+      if (f.type === 'signature' && signatureImage) {
+        const sigBytes = Uint8Array.from(atob(signatureImage.split(',')[1]), c => c.charCodeAt(0));
+        const sigImg = await pdf.embedPng(sigBytes);
+        const x = f.x / canvasScale;
+        const imgW = (f.w || 250) / canvasScale;
+        const imgH = (f.h || 80) / canvasScale;
+        const y = ph - (f.y / canvasScale) - imgH;
+        page.drawImage(sigImg, { x, y, width: imgW, height: imgH });
+      }
+    }
+
+    const flattened = await pdf.save();
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(flattened)));
+
+    // Send to Shopify
+    const res = await fetch(apiBase + '/save-signed-pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: template.pdfFileName, pdfBase64: base64 })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Upload failed');
+    }
+
+    status.innerHTML = '<div class="success">✅ Form submitted successfully!<br><small>Your signed PDF has been sent to Shopify.</small></div>';
+  } catch (err) {
+    status.innerHTML = '<div class="error">❌ ' + err.message + '</div>';
+    document.getElementById('submitBtn').disabled = false;
+  }
+}
+
+// ---------- Start ----------
+init();
+</script>
+</body>
+</html>

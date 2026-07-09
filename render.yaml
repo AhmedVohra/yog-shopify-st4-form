@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: shopify-pdf-signer
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: SHOPIFY_STORE
+        sync: false
+      - key: SHOPIFY_ADMIN_API_TOKEN
+        sync: false
+      - key: SHOPIFY_CLIENT_ID
+        sync: false
+      - key: SHOPIFY_CLIENT_SECRET
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: APP_URL
+        sync: false
+      - key: PORT
+        value: "3001"
