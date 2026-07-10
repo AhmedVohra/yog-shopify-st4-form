@@ -3,36 +3,32 @@
 #   1. Embedded Template Designer in Shopify Admin
 #   2. Customer Fill & Sign form on the storefront (via App Proxy)
 #
-# To deploy: use `shopify app deploy` or configure manually in Partner Dashboard.
+# Deployed with `shopify app deploy` (Shopify CLI). Do not hand-edit the
+# client_id below except to match the app in the Partner Dashboard.
 
 name = "PDF Signer & Form Builder"
-
-# ---- App credentials (set in Partner Dashboard / .env) ----
-client_id = "YOUR_SHOPIFY_CLIENT_ID"
-
-# ---- Application URLs ----
-application_url = "https://your-app-domain.com"
-auth_callback_path = "/auth/callback"
-
-# ---- App Proxy (for customer form on storefront) ----
-# Path: /apps/pdf-signer -> proxies to {application_url}/proxy
-# The customer form will be at: {store}.myshopify.com/apps/pdf-signer/form?id=...
-[app_proxy]
-path_prefix = "apps"
-
-# ---- Embedded Admin App ----
-[embedded]
-redirect_url = "https://your-app-domain.com/designer/embedded"
-app_url = "https://your-app-domain.com/designer"
-allowed_redirection_urls = [
-  "https://your-app-domain.com/auth/callback",
-  "https://your-app-domain.com/designer"
-]
+client_id = "8f86ace95ee2d1c674d2786ea7fdb78f"
+application_url = "https://yog-st4-form.azurewebsites.net/designer/embedded"
+embedded = true
 
 # ---- Access Scopes ----
 [access_scopes]
 scopes = "write_files,read_files,write_orders,read_orders,read_themes,write_themes,read_content,write_content"
 
-# ---- Webhooks (optional) ----
-# [webhooks]
-# api_version = "2024-10"
+# ---- OAuth ----
+[auth]
+redirect_urls = [
+  "https://yog-st4-form.azurewebsites.net/auth/callback",
+  "https://yog-st4-form.azurewebsites.net/designer"
+]
+
+# ---- Webhooks ----
+[webhooks]
+api_version = "2024-10"
+
+# ---- App Proxy (customer form on storefront) ----
+# Storefront URL becomes: {store}.myshopify.com/apps/pdf-signer/form?id=...
+[app_proxy]
+url = "https://yog-st4-form.azurewebsites.net/proxy"
+subpath = "pdf-signer"
+prefix = "apps"

@@ -32,6 +32,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .field-overlay .field-label { font-size: 11px; color: #666; padding: 2px 4px; pointer-events: none; white-space: nowrap; overflow: hidden; }
 .field-overlay.signature { background: rgba(179,69,47,0.08); border-color: #b3452f; border-style: dotted; }
 .field-overlay.signature .field-label { color: #b3452f; }
+.field-overlay.checkbox { min-width: 16px; min-height: 16px; }
+.field-overlay.checkbox .field-label { position: absolute; left: 100%; top: 0; margin-left: 4px; }
 .field-overlay .resize-handle { position: absolute; right: -4px; bottom: -4px; width: 10px; height: 10px; background: #0066cc; border-radius: 2px; cursor: nwse-resize; display: none; }
 .field-overlay.selected .resize-handle { display: block; }
 
@@ -92,6 +94,9 @@ body.shopify-embedded .toolbar { border-radius: 8px 8px 0 0; }
         </button>
         <button class="field-type-btn" data-type="signature" onclick="selectTool('signature', this)">
           <span class="icon">✍️</span> Signature Box
+        </button>
+        <button class="field-type-btn" data-type="checkbox" onclick="selectTool('checkbox', this)">
+          <span class="icon">☑️</span> Checkbox
         </button>
         <button class="field-type-btn" data-type="label" onclick="selectTool('label', this)">
           <span class="icon">🏷️</span> Static Label
@@ -208,7 +213,8 @@ function selectTool(tool, btn) {
   document.querySelectorAll('.field-type-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   deselectField();
-  setStatus(`Tool: ${tool === 'move' ? 'Select/Move' : tool === 'signature' ? 'Signature Box' : tool === 'label' ? 'Static Label' : 'Text Input'}`);
+  const toolLabels = { move: 'Select/Move', signature: 'Signature Box', label: 'Static Label', checkbox: 'Checkbox', text: 'Text Input' };
+  setStatus(`Tool: ${toolLabels[tool] || 'Text Input'}`);
 }
 
 // ---------- PDF loading ----------
@@ -227,6 +233,7 @@ async function handlePdfUpload(e) {
     const bytes = new Uint8Array(ev.target.result.split(',')[1] ? atob(pdfBase64).split('').map(c => c.charCodeAt(0)) : []);
     // Also read arrayBuffer for pdf.js
     const ab = await file.arrayBuffer();
+    clearFields(); // starting a fresh PDF discards any previously placed fields
     renderPdf(ab);
   };
   reader.readAsDataURL(file);
@@ -236,7 +243,6 @@ async function renderPdf(data) {
   pdfDoc = await pdfjsLib.getDocument({ data }).promise;
   emptyState.style.display = 'none';
   container.style.display = 'inline-block';
-  clearFields();
   await renderPage(currentPage);
   setStatus(`Loaded "${pdfFileName}" — ${pdfDoc.numPages} page(s). Add fields by clicking on the PDF.`);
 }
@@ -259,7 +265,7 @@ function renderFieldOverlays() {
   // Create new overlays
   fields.forEach((f, i) => {
     const div = document.createElement('div');
-    div.className = 'field-overlay' + (f.type === 'signature' ? ' signature' : '') + (selectedField === i ? ' selected' : '');
+    div.className = 'field-overlay' + (f.type === 'signature' ? ' signature' : '') + (f.type === 'checkbox' ? ' checkbox' : '') + (selectedField === i ? ' selected' : '');
     div.style.left = f.x + 'px';
     div.style.top = f.y + 'px';
     div.style.width = (f.w || 160) + 'px';
@@ -281,9 +287,9 @@ canvas.addEventListener('click', (e) => {
     type: currentTool,
     x: Math.round(x),
     y: Math.round(y),
-    w: currentTool === 'signature' ? 250 : 160,
-    h: currentTool === 'signature' ? 80 : 32,
-    label: currentTool === 'signature' ? 'Signature' : currentTool === 'label' ? 'Label' : 'Text Field',
+    w: currentTool === 'signature' ? 250 : currentTool === 'checkbox' ? 22 : 160,
+    h: currentTool === 'signature' ? 80 : currentTool === 'checkbox' ? 22 : 32,
+    label: currentTool === 'signature' ? 'Signature' : currentTool === 'label' ? 'Label' : currentTool === 'checkbox' ? 'Checkbox' : 'Text Field',
     placeholder: '',
     fontSize: 14,
     required: false
@@ -336,10 +342,6 @@ let dragIdx = null, dragStartX, dragStartY, fieldStartX, fieldStartY, isDragging
 function onFieldMouseDown(e, idx) {
   if (e.target.classList.contains('resize-handle')) return;
   e.preventDefault();
-  if (currentTool !== 'move') {
-    selectField(idx);
-    return;
-  }
   selectField(idx);
   dragIdx = idx;
   dragStartX = e.clientX;

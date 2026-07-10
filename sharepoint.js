@@ -78,12 +78,16 @@ async function resolveSiteId(token) {
   return cachedSiteId;
 }
 
-async function resolveDriveId(token, siteId) {
+// A drive ID is self-sufficient for Graph calls (/drives/{id}/root:/...) —
+// no site lookup needed when one is given directly. Only resolve via site
+// + library name as a fallback when no drive ID was configured.
+async function resolveDriveId(token) {
   if (cachedDriveId) return cachedDriveId;
   if (process.env.SHAREPOINT_DRIVE_ID) {
     cachedDriveId = process.env.SHAREPOINT_DRIVE_ID;
     return cachedDriveId;
   }
+  const siteId = await resolveSiteId(token);
   const libraryName = process.env.SHAREPOINT_LIBRARY || 'Documents';
   const drives = await graphGet(`/sites/${siteId}/drives`, token);
   const drive = (drives.value || []).find(d => d.name === libraryName);
@@ -103,15 +107,14 @@ async function resolveDriveId(token, siteId) {
  */
 async function uploadPdfToSharePoint(filename, pdfBuffer) {
   const token = await getGraphToken();
-  const siteId = await resolveSiteId(token);
-  const driveId = await resolveDriveId(token, siteId);
+  const driveId = await resolveDriveId(token);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const folder = (process.env.SHAREPOINT_FOLDER || '').replace(/^\/+|\/+$/g, '');
   const itemPath = (folder ? folder + '/' : '') + `${stamp}_${filename}`;
   const encodedPath = itemPath.split('/').map(encodeURIComponent).join('/');
 
-  const res = await fetch(`${GRAPH}/sites/${siteId}/drives/${driveId}/root:/${encodedPath}:/content`, {
+  const res = await fetch(`${GRAPH}/drives/${driveId}/root:/${encodedPath}:/content`, {
     method: 'PUT',
     headers: {
       Authorization: `Bearer ${token}`,

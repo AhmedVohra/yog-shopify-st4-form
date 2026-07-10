@@ -13,5 +13,8 @@
     "express-session": "^1.19.0",
     "localtunnel": "^2.0.2",
     "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "@shopify/cli": "^4.4.0"
   }
 }

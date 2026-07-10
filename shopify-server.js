@@ -55,7 +55,7 @@ app.use(session({
 // ---------- Serve static files ----------
 app.use(express.static(path.join(__dirname, 'public')));
 // ---------- Core routes ----------
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'legacy', 'pdf-signer.html')));
+app.get('/', (req, res) => res.redirect('/designer'));
 
 // Template designer â€” standalone (direct access) & embedded Shopify admin
 app.get('/designer', (req, res) => res.sendFile(path.join(__dirname, 'public', 'template-designer.html')));
@@ -221,7 +221,7 @@ function verifyShopifyHmac(req, res, next) {
     const message = Object.keys(params)
       .sort()
       .map(k => `${k}=${params[k]}`)
-      .join('');
+      .join('&');
     const generated = crypto.createHmac('sha256', CLIENT_SECRET)
       .update(message)
       .digest('hex');
@@ -320,7 +320,7 @@ if (needsOAuth) {
       const message = Object.keys(paramsToVerify)
         .sort()
         .map(k => `${k}=${paramsToVerify[k]}`)
-        .join('');
+        .join('&');
       const generated = crypto.createHmac('sha256', CLIENT_SECRET)
         .update(message).digest('hex');
       if (generated !== hmac) return res.status(401).send('HMAC verification failed.');
