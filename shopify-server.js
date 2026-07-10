@@ -425,10 +425,11 @@ app.post('/api/store/disable-password', async (req, res) => {
 // ---------- Save signed PDF (direct route; same handler as the proxy) ----------
 app.post('/api/save-signed-pdf', handleSaveSignedPdf);
 
-// Azure Functions custom handler passes the port to listen on via
-// FUNCTIONS_CUSTOMHANDLER_PORT; locally we fall back to PORT/3001.
-const PORT = process.env.FUNCTIONS_CUSTOMHANDLER_PORT || process.env.PORT || 3001;
-const IN_AZURE = !!(process.env.FUNCTIONS_CUSTOMHANDLER_PORT || process.env.WEBSITE_HOSTNAME);
+// Azure App Service (Linux) sets PORT itself; locally we fall back to 3001.
+const PORT = process.env.PORT || 3001;
+const IN_AZURE = !!process.env.WEBSITE_HOSTNAME;
+// Bind all interfaces — Azure's warmup/health probe reaches the container
+// over its external network interface, not literal loopback.
 app.listen(PORT, () => {
   console.log(`Shopify signed-PDF backend listening on :${PORT}`);
   if (!IN_AZURE && process.env.DISABLE_TUNNEL !== '1') startTunnel();

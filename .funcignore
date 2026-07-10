@@ -1,7 +1,0 @@
-.git
-.env
-.env.example
-.vscode
-scripts/
-*.md
-local.settings.json
