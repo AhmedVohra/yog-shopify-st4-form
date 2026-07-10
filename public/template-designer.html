@@ -37,7 +37,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .field-overlay .field-label { font-size: 11px; color: #666; padding: 2px 4px; pointer-events: none; white-space: nowrap; overflow: hidden; }
 .field-overlay.signature { background: rgba(179,69,47,0.08); border-color: #b3452f; border-style: dotted; }
 .field-overlay.signature .field-label { color: #b3452f; }
-.field-overlay.checkbox { min-width: 16px; min-height: 16px; }
+.field-overlay.checkbox { min-width: 10px; min-height: 10px; }
 .field-overlay.checkbox .field-label { position: absolute; left: 100%; top: 0; margin-left: 4px; }
 .field-overlay .resize-handle { position: absolute; right: -4px; bottom: -4px; width: 10px; height: 10px; background: #0066cc; border-radius: 2px; cursor: nwse-resize; display: none; }
 .field-overlay .resize-handle-top { position: absolute; left: 50%; top: -4px; width: 10px; height: 10px; background: #0066cc; border-radius: 2px; cursor: ns-resize; display: none; transform: translateX(-50%); }
@@ -332,8 +332,8 @@ canvas.addEventListener('click', (e) => {
     type: currentTool,
     x: Math.round(toStorage(x)),
     y: Math.round(toStorage(y)),
-    w: currentTool === 'signature' ? 250 : currentTool === 'checkbox' ? 22 : 160,
-    h: currentTool === 'signature' ? 80 : currentTool === 'checkbox' ? 22 : 32,
+    w: currentTool === 'signature' ? 250 : currentTool === 'checkbox' ? 16 : 160,
+    h: currentTool === 'signature' ? 80 : currentTool === 'checkbox' ? 16 : 32,
     label: currentTool === 'signature' ? 'Signature' : currentTool === 'label' ? 'Label' : currentTool === 'checkbox' ? 'Checkbox' : 'Text Field',
     placeholder: '',
     fontSize: 14,
@@ -385,6 +385,12 @@ function deleteSelectedField() {
 // resizeMode: null (not resizing) | 'br' (bottom-right handle) | 'top' (top handle)
 let dragIdx = null, dragStartX, dragStartY, fieldStartX, fieldStartY, fieldStartW, fieldStartH, isDragging = false, resizeMode = null;
 
+// Checkboxes are typically much smaller than a text field's printed line —
+// the general 60x24 floor made it impossible to resize one down to match.
+function getMinFieldSize(type) {
+  return type === 'checkbox' ? { minW: 10, minH: 10 } : { minW: 60, minH: 24 };
+}
+
 function onFieldMouseDown(e, idx) {
   if (e.target.classList.contains('resize-handle') || e.target.classList.contains('resize-handle-top')) return;
   e.preventDefault();
@@ -429,10 +435,12 @@ document.addEventListener('mousemove', (e) => {
   const dx = toStorage(e.clientX - dragStartX);
   const dy = toStorage(e.clientY - dragStartY);
   if (resizeMode === 'br') {
-    fields[dragIdx].w = Math.max(60, fieldStartW + dx);
-    fields[dragIdx].h = Math.max(24, fieldStartH + dy);
+    const { minW, minH } = getMinFieldSize(fields[dragIdx].type);
+    fields[dragIdx].w = Math.max(minW, fieldStartW + dx);
+    fields[dragIdx].h = Math.max(minH, fieldStartH + dy);
   } else if (resizeMode === 'top') {
-    const newH = Math.max(24, fieldStartH - dy);
+    const { minH } = getMinFieldSize(fields[dragIdx].type);
+    const newH = Math.max(minH, fieldStartH - dy);
     fields[dragIdx].h = newH;
     fields[dragIdx].y = Math.round(fieldStartY + (fieldStartH - newH));
   } else if (isDragging) {
