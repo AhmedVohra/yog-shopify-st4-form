@@ -23,7 +23,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .workspace { display: flex; flex: 1; overflow: hidden; }
 .sidebar { width: 260px; background: #fff; border-right: 1px solid #ddd; padding: 14px; overflow-y: auto; flex-shrink: 0; display: flex; flex-direction: column; gap: 14px; }
 .sidebar h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #888; margin-bottom: 4px; }
-.pdf-area { flex: 1; overflow: auto; position: relative; background: #e8e8e0; display: flex; align-items: center; justify-content: center; }
+/* align-items/justify-content use "safe center": centers the PDF when it
+   fits, but falls back to start-alignment when zoomed content overflows —
+   plain "center" clips the leading (top/left) overflow from scroll reach
+   in a scrollable flex container, which is why zooming in used to strand
+   the upper part of the page unreachable. */
+.pdf-area { flex: 1; overflow: auto; position: relative; background: #e8e8e0; display: flex; align-items: safe center; justify-content: safe center; }
 .pdf-container { position: relative; display: inline-block; box-shadow: 0 4px 24px rgba(0,0,0,.15); margin: 20px; }
 .pdf-container canvas { display: block; }
 .field-overlay { position: absolute; border: 2px dashed #1c2b2d; background: rgba(28,43,45,0.08); cursor: move; border-radius: 3px; min-width: 60px; min-height: 24px; }
@@ -35,7 +40,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .field-overlay.checkbox { min-width: 16px; min-height: 16px; }
 .field-overlay.checkbox .field-label { position: absolute; left: 100%; top: 0; margin-left: 4px; }
 .field-overlay .resize-handle { position: absolute; right: -4px; bottom: -4px; width: 10px; height: 10px; background: #0066cc; border-radius: 2px; cursor: nwse-resize; display: none; }
-.field-overlay.selected .resize-handle { display: block; }
+.field-overlay .resize-handle-top { position: absolute; left: 50%; top: -4px; width: 10px; height: 10px; background: #0066cc; border-radius: 2px; cursor: ns-resize; display: none; transform: translateX(-50%); }
+.field-overlay.selected .resize-handle, .field-overlay.selected .resize-handle-top { display: block; }
+
+/* zoom controls */
+.zoom-controls { display: flex; align-items: center; gap: 4px; }
+.zoom-controls button { padding: 6px 10px; font-size: 15px; line-height: 1; }
+.zoom-controls .zoom-level { font-size: 12px; color: #666; min-width: 42px; text-align: center; user-select: none; }
 
 /* field type buttons */
 .field-types { display: flex; flex-direction: column; gap: 6px; }
@@ -82,6 +93,13 @@ body.shopify-embedded .toolbar { border-radius: 8px 8px 0 0; }
   <button onclick="shareTemplate()" style="display:none;" id="shareBtn">🔗 Share</button>
   <button onclick="previewAsCustomer()" style="display:none;" id="previewBtn">👁️ Preview</button>
   <button class="danger" onclick="deleteTemplate()" style="display:none;" id="deleteBtn">🗑 Delete</button>
+  <span class="sep"></span>
+  <div class="zoom-controls">
+    <button onclick="zoomOut()" title="Zoom out">−</button>
+    <span class="zoom-level" id="zoomLevelDisplay">100%</span>
+    <button onclick="zoomIn()" title="Zoom in">+</button>
+    <button onclick="zoomReset()" title="Reset zoom">Reset</button>
+  </div>
 </div>
 
 <div class="workspace">
@@ -125,11 +143,13 @@ body.shopify-embedded .toolbar { border-radius: 8px 8px 0 0; }
       <h3>Instructions</h3>
       <p style="font-size:12px;color:#888;line-height:1.5;">
         1. Load a PDF form<br>
-        2. Pick a field type from above<br>
-        3. Click on the PDF to place it<br>
-        4. Drag fields to reposition<br>
-        5. Click a field to edit its properties<br>
-        6. Save your template
+        2. Use +/− to zoom in for precise placement<br>
+        3. Pick a field type from above<br>
+        4. Click on the PDF to place it<br>
+        5. Drag fields to reposition<br>
+        6. Drag the bottom-right handle to resize, or the top handle to shrink from the top (useful to avoid overlapping a label)<br>
+        7. Click a field to edit its properties<br>
+        8. Save your template
       </p>
     </div>
   </aside>
@@ -199,6 +219,16 @@ let currentTemplateId = null;
 let pdfBase64 = '';
 let pdfFileName = '';
 
+// Field x/y/w/h are always stored at STORAGE_SCALE (must match the fixed
+// scale customer-form.html renders at) regardless of the designer's own
+// zoom level, so templates render correctly for customers no matter what
+// zoom they were authored at. toStorage/toDisplay convert between the
+// designer's current on-screen zoom and that canonical storage scale.
+const STORAGE_SCALE = 1.5;
+let zoomLevel = STORAGE_SCALE;
+function toStorage(px) { return px * (STORAGE_SCALE / zoomLevel); }
+function toDisplay(px) { return px * (zoomLevel / STORAGE_SCALE); }
+
 const canvas = document.getElementById('pdfCanvas');
 const container = document.getElementById('pdfContainer');
 const emptyState = document.getElementById('emptyState');
@@ -250,7 +280,7 @@ async function renderPdf(data) {
 async function renderPage(num) {
   currentPage = num;
   const page = await pdfDoc.getPage(num);
-  const viewport = page.getViewport({ scale: 1.5 });
+  const viewport = page.getViewport({ scale: zoomLevel });
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   const ctx = canvas.getContext('2d');
@@ -259,6 +289,20 @@ async function renderPage(num) {
   renderFieldOverlays();
 }
 
+// ---------- Zoom ----------
+const ZOOM_STEP = 1.15;
+const ZOOM_MIN = STORAGE_SCALE * 0.5;
+const ZOOM_MAX = STORAGE_SCALE * 3;
+
+function setZoom(newZoom) {
+  zoomLevel = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, newZoom));
+  document.getElementById('zoomLevelDisplay').textContent = Math.round((zoomLevel / STORAGE_SCALE) * 100) + '%';
+  if (pdfDoc) renderPage(currentPage);
+}
+function zoomIn() { setZoom(zoomLevel * ZOOM_STEP); }
+function zoomOut() { setZoom(zoomLevel / ZOOM_STEP); }
+function zoomReset() { setZoom(STORAGE_SCALE); }
+
 function renderFieldOverlays() {
   // Remove existing overlays
   container.querySelectorAll('.field-overlay').forEach(el => el.remove());
@@ -266,13 +310,14 @@ function renderFieldOverlays() {
   fields.forEach((f, i) => {
     const div = document.createElement('div');
     div.className = 'field-overlay' + (f.type === 'signature' ? ' signature' : '') + (f.type === 'checkbox' ? ' checkbox' : '') + (selectedField === i ? ' selected' : '');
-    div.style.left = f.x + 'px';
-    div.style.top = f.y + 'px';
-    div.style.width = (f.w || 160) + 'px';
-    div.style.height = (f.h || 32) + 'px';
-    div.innerHTML = `<span class="field-label">${f.label || f.type}</span><div class="resize-handle"></div>`;
+    div.style.left = toDisplay(f.x) + 'px';
+    div.style.top = toDisplay(f.y) + 'px';
+    div.style.width = toDisplay(f.w || 160) + 'px';
+    div.style.height = toDisplay(f.h || 32) + 'px';
+    div.innerHTML = `<span class="field-label">${f.label || f.type}</span><div class="resize-handle-top" title="Resize from top"></div><div class="resize-handle" title="Resize"></div>`;
     div.addEventListener('mousedown', (e) => onFieldMouseDown(e, i));
     div.querySelector('.resize-handle').addEventListener('mousedown', (e) => onResizeMouseDown(e, i));
+    div.querySelector('.resize-handle-top').addEventListener('mousedown', (e) => onTopResizeMouseDown(e, i));
     container.appendChild(div);
   });
 }
@@ -285,8 +330,8 @@ canvas.addEventListener('click', (e) => {
   const y = e.clientY - rect.top;
   const field = {
     type: currentTool,
-    x: Math.round(x),
-    y: Math.round(y),
+    x: Math.round(toStorage(x)),
+    y: Math.round(toStorage(y)),
     w: currentTool === 'signature' ? 250 : currentTool === 'checkbox' ? 22 : 160,
     h: currentTool === 'signature' ? 80 : currentTool === 'checkbox' ? 22 : 32,
     label: currentTool === 'signature' ? 'Signature' : currentTool === 'label' ? 'Label' : currentTool === 'checkbox' ? 'Checkbox' : 'Text Field',
@@ -337,10 +382,11 @@ function deleteSelectedField() {
 }
 
 // ---------- Field dragging ----------
-let dragIdx = null, dragStartX, dragStartY, fieldStartX, fieldStartY, isDragging = false, isResizing = false;
+// resizeMode: null (not resizing) | 'br' (bottom-right handle) | 'top' (top handle)
+let dragIdx = null, dragStartX, dragStartY, fieldStartX, fieldStartY, fieldStartW, fieldStartH, isDragging = false, resizeMode = null;
 
 function onFieldMouseDown(e, idx) {
-  if (e.target.classList.contains('resize-handle')) return;
+  if (e.target.classList.contains('resize-handle') || e.target.classList.contains('resize-handle-top')) return;
   e.preventDefault();
   selectField(idx);
   dragIdx = idx;
@@ -358,26 +404,45 @@ function onResizeMouseDown(e, idx) {
   dragIdx = idx;
   dragStartX = e.clientX;
   dragStartY = e.clientY;
-  fieldStartX = fields[idx].w;
-  fieldStartY = fields[idx].h;
-  isResizing = true;
+  fieldStartW = fields[idx].w || 160;
+  fieldStartH = fields[idx].h || 32;
+  resizeMode = 'br';
+}
+
+// Resize from the top edge: grows/shrinks height while keeping the bottom
+// edge fixed, so a field can be pulled down away from a label above it
+// without needing to drag-reposition afterward.
+function onTopResizeMouseDown(e, idx) {
+  e.preventDefault();
+  e.stopPropagation();
+  selectField(idx);
+  dragIdx = idx;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  fieldStartY = fields[idx].y;
+  fieldStartH = fields[idx].h || 32;
+  resizeMode = 'top';
 }
 
 document.addEventListener('mousemove', (e) => {
-  if (!isDragging && !isResizing) return;
-  const dx = e.clientX - dragStartX;
-  const dy = e.clientY - dragStartY;
-  if (isResizing) {
-    fields[dragIdx].w = Math.max(60, fieldStartX + dx);
-    fields[dragIdx].h = Math.max(24, fieldStartY + dy);
-  } else {
+  if (!isDragging && !resizeMode) return;
+  const dx = toStorage(e.clientX - dragStartX);
+  const dy = toStorage(e.clientY - dragStartY);
+  if (resizeMode === 'br') {
+    fields[dragIdx].w = Math.max(60, fieldStartW + dx);
+    fields[dragIdx].h = Math.max(24, fieldStartH + dy);
+  } else if (resizeMode === 'top') {
+    const newH = Math.max(24, fieldStartH - dy);
+    fields[dragIdx].h = newH;
+    fields[dragIdx].y = Math.round(fieldStartY + (fieldStartH - newH));
+  } else if (isDragging) {
     fields[dragIdx].x = Math.round(fieldStartX + dx);
     fields[dragIdx].y = Math.round(fieldStartY + dy);
   }
   renderFieldOverlays();
 });
 
-document.addEventListener('mouseup', () => { isDragging = false; isResizing = false; dragIdx = null; });
+document.addEventListener('mouseup', () => { isDragging = false; resizeMode = null; dragIdx = null; });
 
 // ---------- Field cleanup ----------
 function clearFields() {

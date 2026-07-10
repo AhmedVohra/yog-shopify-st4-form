@@ -15,7 +15,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 
 /* Layout */
 .main { display: flex; flex: 1; overflow: hidden; }
-.pdf-panel { flex: 1; overflow: auto; position: relative; display: flex; align-items: center; justify-content: center; background: #e0e0d8; padding: 20px; }
+/* safe center: falls back to start-alignment when the PDF overflows the
+   panel, so every part of a tall form stays reachable by scrolling. */
+.pdf-panel { flex: 1; overflow: auto; position: relative; display: flex; align-items: safe center; justify-content: safe center; background: #e0e0d8; padding: 20px; }
 .form-panel { width: 320px; background: #fff; border-left: 1px solid #ddd; padding: 20px; overflow-y: auto; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
 .form-panel h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #888; }
 
@@ -24,10 +26,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .pdf-wrapper canvas { display: block; }
 
 /* Overlay inputs positioned on PDF */
-.field-input { position: absolute; border: 2px solid #0066cc; background: rgba(255,255,255,0.92); border-radius: 4px; font-size: 14px; padding: 4px 8px; font-family: inherit; outline: none; }
-.field-input:focus { border-color: #004499; background: #fff; box-shadow: 0 0 0 3px rgba(0,102,204,0.15); }
-.field-input.required { border-color: #b3452f; }
-.field-input.signature { border: 2px dotted #b3452f; background: rgba(255,245,240,0.92); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #b3452f; overflow: hidden; }
+/* !important throughout: this form is injected into an arbitrary merchant
+   theme's page via the App Proxy Liquid fragment, and theme CSS (e.g. a
+   global `input { border: 1px solid transparent }` shown-on-focus pattern)
+   can otherwise override these and make the field boxes invisible until
+   clicked. */
+.field-input { position: absolute; box-sizing: border-box; border: 2px solid #0066cc !important; background: rgba(255,255,255,0.92) !important; border-radius: 4px; font-size: 14px; padding: 4px 8px; font-family: inherit; outline: none; appearance: none; -webkit-appearance: none; }
+.field-input:focus { border-color: #004499 !important; background: #fff !important; box-shadow: 0 0 0 3px rgba(0,102,204,0.15); }
+.field-input.required { border-color: #b3452f !important; }
+.field-input.signature { border: 2px dotted #b3452f !important; background: rgba(255,245,240,0.92) !important; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #b3452f; overflow: hidden; }
 .field-input.signature img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .field-input.checkbox { padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .field-label-overlay { position: absolute; font-size: 10px; color: #0066cc; font-weight: 600; pointer-events: none; }
