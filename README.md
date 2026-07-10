@@ -1,27 +1,29 @@
 # PDF Signer — Shopify App (Template Designer + Customer Forms)
 
-A complete Shopify embedded app for building fillable PDF templates and
-collecting customer signatures directly on your storefront.
+A Shopify app for building fillable PDF templates and collecting customer
+signatures directly on your storefront, embedded in the store's theme (not
+an iframe). Signed PDFs are stored in SharePoint.
 
 ## What's included
 
 | File | Purpose |
 |------|---------|
-| `shopify-server.js` | Express backend — API, OAuth, App Proxy, Shopify uploads |
+| `shopify-server.js` | Express backend — API, OAuth, App Proxy, Liquid-fragment rendering |
+| `sharepoint.js` | Uploads signed PDFs to a SharePoint document library via Microsoft Graph |
 | `public/template-designer.html` | Drag-and-drop PDF template builder (embedded in Shopify Admin) |
 | `public/customer-form.html` | Customer-facing fill & sign form (served on your storefront) |
-| `data/templates.json` | Local JSON storage for templates |
+| `data/templates.json` | Local JSON storage for templates (see note below — this is live app data, not a seed file) |
 | `data/*.pdf` | Sample/demo PDFs used by the local templates |
-| `legacy/pdf-signer.html` | Older standalone prototype, still served at `/` |
+| `shopify.app.toml` | Shopify CLI app config — the real, deployed source of truth for App Proxy/OAuth/scopes |
+| `legacy/` | Old standalone prototype, unreferenced dead code |
 | `scripts/` | One-off dev scripts (demo PDF generation, dev-store page updates) |
-| `shopify.app.toml` | Shopify app configuration reference |
 | `.env.example` | Environment variable template |
 
 ## Quick Start (Local Dev)
 
 ```bash
 npm install
-# Copy .env.example to .env and fill in your Shopify credentials
+# Copy .env.example to .env and fill in your Shopify + SharePoint credentials
 cp .env.example .env
 npm start
 ```
@@ -30,72 +32,110 @@ Then open:
 - **Template Designer:** http://localhost:3001/designer
 - **Customer Form:** http://localhost:3001/form?id=TEMPLATE_ID
 
-## Connecting to Shopify as an Embedded App
-
-### 1. Create a Shopify App in Partner Dashboard
-
-1. Go to [Shopify Partners](https://partners.shopify.com/) → Apps → Create app
-2. Choose **"Build custom app"** or **"Public app"**
-3. Under **Configuration**, set:
-   - **App URL:** `https://your-domain.com/designer/embedded`
-   - **Allowed redirection URLs:** `https://your-domain.com/auth/callback`
-
-### 2. Configure App Proxy (for customer form on storefront)
-
-In the Partner Dashboard, under **App setup** → **App proxy**:
-- **Subpath prefix:** `apps`
-- **Subpath:** `pdf-signer`
-- **Proxy URL:** `https://your-domain.com/proxy`
-
-This makes the customer form available at:
-`https://your-store.myshopify.com/apps/pdf-signer/form?id=TEMPLATE_ID`
-
-### 3. Set Environment Variables
-
-```
-SHOPIFY_STORE=yog-dev-store.myshopify.com
-SHOPIFY_CLIENT_ID=your_client_id
-SHOPIFY_CLIENT_SECRET=your_client_secret
-PORT=3001
-APP_URL=https://your-domain.com       # Your deployed URL
-SESSION_SECRET=a-random-secret-string
-```
-
-Alternatively, use a direct Admin API token (simpler for testing):
-```
-SHOPIFY_ADMIN_API_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-### 4. Required API Scopes
-
-- `write_files`, `read_files` — Upload signed PDFs to Shopify Files
-- `write_orders`, `read_orders` — Attach PDFs to orders via metafields
-- `read_themes`, `write_themes` — For theme app extensions (optional)
-- `read_content`, `write_content` — Read/write Shopify pages via API (needed for storefront iframe updates)
-
-### 5. Install the App on Your Store
-
-```
-https://your-domain.com/auth?shop=your-store.myshopify.com
-```
-
-After OAuth approval, the Template Designer will appear in your Shopify Admin
-under **Apps** → **PDF Signer & Form Builder**.
+`npm start` also auto-launches a `localtunnel` so the app is reachable at a public URL for Shopify to proxy to during local development (skip it with `DISABLE_TUNNEL=1`).
 
 ## How It All Fits Together
 
 ```mermaid
 graph TD
-    A[Shopify Admin] -->|Embedded App| B[Template Designer]
+    A[Shopify Admin] -->|Embedded App at /designer/embedded| B[Template Designer]
     B -->|Save| C[data/templates.json]
-    B -->|Share Link| D[Customer Form URL]
-    D -->|Served via App Proxy| E[Customer Form]
-    E -->|Submit Signed PDF| F[shopify-server.js]
-    F -->|Upload| G[Shopify Files]
-    F -->|Attach| H[Order Metafield]
-    C -->|Load| E
+    D[Storefront: yourstore.com/apps/pdf-signer/form?id=...] -->|App Proxy| E[shopify-server.js]
+    E -->|Liquid fragment| F[Customer Form, rendered inside theme]
+    F -->|Submit Signed PDF| E
+    E -->|Upload via Microsoft Graph| G[SharePoint document library]
+    C -->|Load| F
     C -->|Load| B
 ```
+
+The customer form is **not** an iframe. `GET /proxy/form` returns a body
+fragment (`Content-Type: application/liquid`) that Shopify merges directly
+into the store's theme layout — same header/footer/fonts as the rest of the
+site. See `CLAUDE.md` for the mechanics.
+
+## Setting Up the Shopify App
+
+This app is managed with **Shopify CLI**, not the classic Partner Dashboard
+click-through flow. `shopify.app.toml` is the real config; edit it and
+deploy, don't hand-configure things in a dashboard.
+
+### 1. Create/link the app
+
+```bash
+npx shopify app config link --client-id=<your-client-id>
+```
+This needs a real interactive terminal (org/app selection prompts) — run it
+in your own terminal, not through an automation tool that pipes stdin.
+
+If you don't have a `client_id` yet, create the app first from the
+[Dev Dashboard](https://dev.shopify.com) or Partner Dashboard, then link it.
+
+**New apps need a Distribution method set once** in the Dev Dashboard before
+any install works ("This app can't be installed yet" otherwise) — for a
+single-merchant app, choose "Custom distribution." That gives you a signed
+install link (`admin.shopify.com/store/{store}/oauth/install_custom_app?...`)
+to use for installing on your store.
+
+### 2. Configure `shopify.app.toml`
+
+```toml
+name = "PDF Signer & Form Builder"
+client_id = "your-client-id"
+application_url = "https://your-domain.com/designer/embedded"
+embedded = true
+
+[access_scopes]
+scopes = "write_files,read_files,write_orders,read_orders,read_themes,write_themes,read_content,write_content"
+
+[auth]
+redirect_urls = [ "https://your-domain.com/auth/callback" ]
+
+[webhooks]
+api_version = "2024-10"
+
+[app_proxy]
+url = "https://your-domain.com/proxy"
+subpath = "pdf-signer"
+prefix = "apps"
+```
+
+This makes the customer form available at:
+`https://your-store.myshopify.com/apps/pdf-signer/form?id=TEMPLATE_ID`
+
+Deploy config changes with:
+```bash
+npx shopify app deploy --client-id=<your-client-id> --allow-updates
+```
+
+### 3. Set Environment Variables
+
+```
+SHOPIFY_STORE=your-store.myshopify.com
+SHOPIFY_CLIENT_SECRET=shpss_xxxxxxxxxxxxxxxxxxxxxxxxxx   # only secret production needs from Shopify
+SHOPIFY_CLIENT_ID=your_client_id                          # not secret; only needed to enable /auth install routes
+SESSION_SECRET=a-random-secret-string
+APP_URL=https://your-domain.com
+PORT=3001
+REQUIRE_PROXY_SIGNATURE=1   # production: reject unsigned App Proxy requests
+```
+
+No `SHOPIFY_ADMIN_API_TOKEN` is required — this app no longer talks to the
+Shopify Admin API for anything on the customer-signing path (signed PDFs go
+to SharePoint, not Shopify Files).
+
+Microsoft Graph / SharePoint (see `sharepoint.js` for the full option list):
+```
+MS_TENANT_ID=...
+MS_CLIENT_ID=...
+MS_CLIENT_SECRET=...
+SHAREPOINT_DRIVE_ID=...        # or SHAREPOINT_HOSTNAME + SHAREPOINT_SITE_PATH
+SHAREPOINT_FOLDER=...          # optional subfolder within the library
+```
+
+### 4. Install the App on Your Store
+
+Use the signed custom-distribution install link from step 1 — not a
+hand-built `/admin/oauth/authorize` URL, which 401s for Dev Dashboard apps.
 
 ## API Endpoints
 
@@ -106,70 +146,48 @@ graph TD
 - `PUT /api/templates/:id` — Update template
 - `DELETE /api/templates/:id` — Delete template
 
-### Shopify Upload
-- `POST /api/save-signed-pdf` — Upload signed PDF to Shopify Files
-  - Body: `{ filename, pdfBase64, shopifyOrderId? }`
+Each has a `/proxy/api/...` equivalent for App Proxy requests (signature-verified).
 
-### OAuth
+### Signed PDF
+- `POST /api/save-signed-pdf` — Upload a signed PDF to SharePoint
+  - Body: `{ filename, pdfBase64 }`
+  - `/proxy/api/save-signed-pdf` is the App Proxy equivalent
+
+### OAuth (only needed if you install via `/auth` instead of the custom-distribution link)
 - `GET /auth?shop=STORE` — Initiate Shopify OAuth install
 - `GET /auth/callback` — OAuth callback (Shopify redirects here)
 
-### App Proxy (Storefront)
-- `GET /proxy/form?id=TEMPLATE_ID` — Customer form (proxied from store domain)
+### Storefront (App Proxy)
+- `GET /proxy/form?id=TEMPLATE_ID` — Customer form, returned as a Liquid fragment for theme embedding
 - `GET /proxy/api/templates/:id` — Template data (proxied)
 - `POST /proxy/api/save-signed-pdf` — Save signed PDF (proxied)
 
 ## Deploying
 
-### Option 1: Render (Recommended — Easiest)
-
-1. Push this repo to GitHub
-2. Go to [render.com](https://render.com) → **New +** → **Blueprint**
-3. Connect your GitHub repo — Render auto-detects `render.yaml`
-4. Set these **Environment Variables** in the Render dashboard:
-   - `SHOPIFY_STORE` — e.g. `yog-dev-store.myshopify.com`
-   - `SHOPIFY_ADMIN_API_TOKEN` — your admin token
-   - `SHOPIFY_CLIENT_ID` — from Partner Dashboard
-   - `SHOPIFY_CLIENT_SECRET` — from Partner Dashboard
-   - `APP_URL` — your Render URL (e.g. `https://shopify-pdf-signer.onrender.com`)
-   - `SESSION_SECRET` — auto-generated by Render
-5. Click **Apply** — Render builds and deploys automatically
-6. Update your Shopify App URLs and App Proxy to point to your Render URL
-
-### Option 2: Fly.io
+The maintained deploy target is **Azure App Service** (Linux, Node). See
+`CLAUDE.md` for the full deploy procedure, including a critical step:
+**sync `data/templates.json` from the live app before every deploy** — the
+deploy package includes whatever's in that file locally, and merchants edit
+templates live through the Designer, so deploying a stale copy silently
+overwrites their work.
 
 ```bash
-fly launch                          # Already configured via fly.toml
-fly secrets set SHOPIFY_STORE=...   # Set all secrets via fly CLI
-fly deploy
+az webapp deploy --name <app-name> --resource-group <rg> --src-path <zip> --type zip
 ```
 
-### Option 3: Docker
+The zip must be source-only (no `node_modules`) — remote build
+(`SCM_DO_BUILD_DURING_DEPLOYMENT=true`) installs dependencies server-side.
+Build the zip with Python's `zipfile` module rather than PowerShell's
+`Compress-Archive`, which writes backslash path separators that break
+anything parsing the archive's directory structure.
 
-```bash
-docker build -t shopify-pdf-signer .
-docker run -p 3001:3001 --env-file .env shopify-pdf-signer
-```
-
-### After Deploying — Update Shopify Configuration
-
-1. **App URL:** `https://your-domain.com/designer/embedded`
-2. **Redirect URLs:** Add `https://your-domain.com/auth/callback`
-3. **App Proxy URL:** `https://your-domain.com/proxy`
-4. **Storefront iframe:** Update your Shopify page to use `https://your-domain.com/form?id=TEMPLATE_ID`
-
-### Regenerating Your Admin Token (if scopes changed)
-
-If you added new API scopes (like `read_content`/`write_content`), your existing
-admin token won't have them. To regenerate:
-
-1. Go to [Shopify Partners](https://partners.shopify.com/) → **Apps** → **Your App** → **API Access**
-2. Under **Admin API access token**, click **Regenerate** or **Create token**
-3. Select the updated scopes (including `read_content` and `write_content`)
-4. Copy the new token and update `SHOPIFY_ADMIN_API_TOKEN` in your `.env` / Render env vars
+`render.yaml` (Render), `fly.toml` + `Dockerfile` (Fly.io), and `Procfile`
+(Heroku-style) are also checked in but unverified since the move to Azure —
+they'd need testing before relying on them.
 
 ## Notes
-- Templates are stored locally in `data/templates.json`. For production, switch to a database.
+- Templates are stored in `data/templates.json` — this is live production data on the deployed app, not just a local seed file, and it's currently the only storage layer (no database). Production should eventually swap this for a real DB; see `CLAUDE.md`'s "Template storage" section before changing anything here in the meantime.
 - The template designer works standalone (direct access) and embedded in Shopify Admin.
-- The customer form auto-detects whether it's served via App Proxy or directly.
-- `pdf-lib` writes text/signature directly into the original PDF, preserving quality.
+- The customer form auto-detects whether it's served via App Proxy or directly, and works as a theme-embedded page (not an iframe) when proxied.
+- `pdf-lib` writes text/signature/checkbox marks directly into the original PDF in the browser — the server never touches PDF bytes except to relay them to SharePoint.
+- Customers can also download a filled copy of the PDF directly (no submission required) via the "Download PDF" button.

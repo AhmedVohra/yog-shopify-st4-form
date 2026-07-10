@@ -15,13 +15,17 @@ There is no build step, lint config, or test suite in this repo — `start` is t
 
 ```
 shopify-server.js        Express entry point (root, per package.json "main")
+sharepoint.js            Microsoft Graph client — uploads signed PDFs to SharePoint
 public/                  Static HTML served directly (template designer, customer form)
 data/                    Local "database" — templates.json + sample/demo PDFs
-legacy/                  Old standalone prototype, still mounted at "/"
+shopify.app.toml         Shopify CLI app config (client_id, App Proxy, OAuth, scopes)
+legacy/                  Old standalone prototype — dead code, kept but unreferenced
 scripts/                 One-off dev scripts, not run by the server
 ```
 
 `shopify-server.js` only serves `public/` via `express.static` (not the whole repo root) — don't add files that need direct static serving anywhere else.
+
+`legacy/pdf-signer.html` is **not** mounted anywhere anymore (the root `/` route used to serve it, but it isn't part of any deploy zip — see Deployment below — so pointing a route at it crashes with `ENOENT`). `/` now just redirects to `/designer`. Treat `legacy/` as inert; nothing imports it.
 
 Local dev URLs (after `npm start`):
 - Template Designer: `http://localhost:3001/designer`
@@ -38,6 +42,8 @@ This is a single-process Express app (`shopify-server.js`) that is simultaneousl
 
 Everything — routing, template CRUD, Shopify GraphQL calls, OAuth — lives in the one server file; there is no MVC layering or separate route/controller modules.
 
+The Shopify app itself ("PDF Signer & Form Builder", client_id `8f86ace9…`) is created and managed through **Shopify CLI** (`@shopify/cli`, a devDependency — not installed globally), not the classic Partner Dashboard UI. `shopify.app.toml` is the real, deployed source of truth for its config (App Proxy, OAuth redirect URLs, webhooks, scopes) — edit it and run `shopify app deploy --client-id=8f86ace95ee2d1c674d2786ea7fdb78f --allow-updates` to push changes; don't reconfigure things by hand in the Dev Dashboard (`dev.shopify.com`, the newer surface this app lives in — not `partners.shopify.com`) or they'll drift from the file. See "Shopify CLI" below for schema and non-interactivity gotchas.
+
 ### Request paths and why they're duplicated
 
 Every customer-facing API/page route exists in two forms:
@@ -48,7 +54,13 @@ The `/proxy/*` routes exist because Shopify's App Proxy rewrites `{store}.myshop
 
 **`/proxy/form` serves a Liquid fragment, not the raw HTML file.** `buildLiquidFragment()` in `shopify-server.js` extracts the `<style>` and `<body>` content of `customer-form.html`, re-scopes the `body {` CSS rule to `#pdfSignerRoot`, and returns it with `Content-Type: application/liquid` so Shopify renders the form inside the store theme (header/footer, no iframe). Two constraints follow: `customer-form.html` must never contain literal `{{` or `{%` sequences (Liquid would parse them and silently break the proxied page — JS template literals `${...}` are fine), and its single `body {` style rule must stay on its own line so the selector rewrite keeps matching.
 
-Similarly, `/designer/embedded` is HMAC-verified (`verifyShopifyHmac`, for requests coming from Shopify Admin's iframe) while plain `/designer` is not (standalone access).
+Similarly, `/designer/embedded` is HMAC-verified (`verifyShopifyHmac`, for requests coming from Shopify Admin's iframe) while plain `/designer` is not (standalone access). `shopify.app.toml`'s `application_url` points at `/designer/embedded` — that's the page Shopify Admin actually loads when a merchant opens the app, so it must always resolve to something real (it silently broke once already by pointing at the bare root, which was resolving to the dead `legacy/` file — see Folder layout above).
+
+**HMAC message-joining gotcha — do not "simplify" this.** There are *two different, both-correct* HMAC algorithms in this file and they are easy to conflate:
+- `verifyProxySignature` (App Proxy `signature` param): sorted `key=value` pairs, **percent-encode `%`→`%25` and `=`→`%3D` in both key and value**, then join with **no separator**.
+- `verifyShopifyHmac` and the `/auth/callback` handler (Admin iframe load / OAuth `hmac` param): sorted `key=value` pairs, **no percent-encoding**, joined with **`&`**.
+
+Both previously used the no-separator form for the Admin/OAuth case, which is wrong — Shopify's Admin/OAuth HMAC always uses `&`. That bug shipped silently for a long time because `/designer/embedded` was never actually hit by real Shopify traffic until `application_url` got fixed to point at it. If you touch either verification function, do not copy the other's algorithm in.
 
 ### Auth model — two mutually exclusive modes
 
@@ -66,11 +78,45 @@ Templates (PDF + field layout + metadata) are stored as a flat array in `data/te
 
 The server never rasterizes or edits PDFs. All rendering (`pdf.js`) and field-writing (`pdf-lib`) happens in the browser, loaded from CDN in `public/template-designer.html` and `public/customer-form.html` (not npm dependencies — check those `<script src>` tags if bumping versions). The server's only PDF-related job is accepting a final signed PDF as base64 (`handleSaveSignedPdf` in `shopify-server.js`) and uploading the bytes to a SharePoint document library via `uploadPdfToSharePoint` in `sharepoint.js` (Microsoft Graph client-credentials flow: token from `login.microsoftonline.com`, lazy site/drive resolution, then a simple `PUT …:/content` — fine because signed PDFs are well under Graph's 4 MB simple-upload limit). Stored filenames get a timestamp prefix because Graph PUT silently overwrites same-name files.
 
+`sharepoint.js`'s drive resolution is IDs-first: if `SHAREPOINT_DRIVE_ID` is set, it's used directly against Graph's `/drives/{id}/root:/...` endpoint with **no site lookup at all** — a drive ID is self-sufficient. Site-based resolution (`SHAREPOINT_HOSTNAME` + `SHAREPOINT_SITE_PATH` → site → drive by `SHAREPOINT_LIBRARY` name) is only a fallback for when no drive ID is configured. Don't reintroduce a hard dependency on site resolution when a drive ID is present — that was a real bug once (see git history).
+
+### Template Designer — zoom and the field coordinate system
+
+Field `x`/`y`/`w`/`h` in `data/templates.json` are stored in a fixed coordinate space — canvas pixels at a **1.5 pdf.js render scale** (the `STORAGE_SCALE` constant in `template-designer.html`). This must match `customer-form.html`, which always renders at a hardcoded 1.5 scale with no zoom of its own; the two files silently agree on this and neither declares it anywhere obvious except the `STORAGE_SCALE` constant and the `canvasScale = 1.5` in `customer-form.html`'s `buildFilledPdfBytes()`.
+
+The Designer has variable zoom (50%–300%, toolbar +/−/Reset), which means its own on-screen rendering scale is *not* the storage scale. `toStorage(px)` / `toDisplay(px)` convert between the two — every place that reads a mouse coordinate to create/move/resize a field must run it through `toStorage()` before writing to `fields[]`, and every place that positions an overlay div from stored data must run it through `toDisplay()`. If you add a new interaction that touches field geometry, get this conversion right or templates will render correctly at one zoom level and wrong at every other one (and wrong on the customer form, which has no zoom to hide the mismatch).
+
+Resize has three modes (`resizeMode`: `null` | `'br'` | `'top'`), each with a type-aware minimum size via `getMinFieldSize(type)` — checkboxes floor at 10px, everything else at 60×24 (sized for text fields; don't apply the text floor to new small field types without checking this function first). The top-handle resize keeps the *bottom* edge fixed while dragging the top edge, so a field can be shrunk down and away from a printed label above it without also needing to reposition.
+
+The `.pdf-area` (Designer) / `.pdf-panel` (customer form) containers use `align-items: safe center; justify-content: safe center;` (CSS Alignment Level 3), not plain `center` — plain `center` on a scrollable flex container clips the leading (top/left) overflow from scroll reach once content is bigger than the viewport, which made zoomed-in content above the fold permanently unreachable. Don't revert to plain `center` on either of these.
+
+### Customer form — field visibility and download
+
+`.field-input` (the overlay boxes positioned on the PDF) are **transparent by default and only show a border on `:focus`** — the form is meant to look like the underlying paper form until a customer clicks into a field, not a page full of blue boxes. Two exceptions stay visible unconditionally: `.field-input.required` (a persistent red border, since customers should be able to see what's mandatory without clicking through every field) and `.field-input.signature` (it's click-to-open-signature-pad, not type-in-place, so it has no focus state to reveal it otherwise). All of these rules use `!important` — this form is injected into an arbitrary merchant theme's page via the App Proxy Liquid fragment, and theme CSS can otherwise override plain-specificity rules.
+
+`buildFilledPdfBytes()` is shared by `submitForm()` (uploads to SharePoint) and `downloadPdf()` (local browser download via `Blob` + a temporary `<a download>`) — the field-drawing logic lives in exactly one place. When drawing text, `page.drawText()`'s `y` is the **baseline**, not the box top or bottom; it's positioned at `(box bottom) + fontSize * 0.2`, a small positive offset so filled text sits just above the box's bottom edge (where the printed line typically is) instead of below it. Get the sign wrong here and every filled value renders below/through the printed line instead of on top of it.
+
 ### Deployment targets
 
-The production target is an **Azure App Service Web App** (Linux, Node 22, resource group `st4-pdf-signer-rg`, app `yog-st4-form` — `https://yog-st4-form.azurewebsites.net`) running the Express server directly via `npm start`; no custom handler layer. This was chosen over an Azure Functions custom handler after hitting a platform-level bug: Node custom handlers on Windows Consumption Function Apps intermittently fail to bind ("access to socket forbidden by its access permissions") — a known, documented Azure limitation, not a bug in this app. The server listens on `process.env.PORT` (App Service sets it) bound to all interfaces — **do not** bind only to `127.0.0.1`, since Azure's warmup/health probe reaches the container over its external interface, not loopback. `IN_AZURE` is detected via `WEBSITE_HOSTNAME` and skips the localtunnel there. Deploy with `az webapp deploy --type zip` (a source-only zip, no `node_modules` — `SCM_DO_BUILD_DURING_DEPLOYMENT=true` runs Oryx's `npm install` server-side).
+The production target is an **Azure App Service Web App** (Linux, Node 22, F1 free tier, resource group `st4-pdf-signer-rg`, app `yog-st4-form` — `https://yog-st4-form.azurewebsites.net`) running the Express server directly via `npm start`; no custom handler layer. This was chosen over an Azure Functions custom handler after hitting a platform-level bug: Node custom handlers on Windows Consumption Function Apps intermittently fail to bind ("access to socket forbidden by its access permissions") — a known, documented Azure limitation, not a bug in this app. The server listens on `process.env.PORT` (App Service sets it) bound to all interfaces — **do not** bind only to `127.0.0.1`, since Azure's warmup/health probe reaches the container over its external interface, not loopback. `IN_AZURE` is detected via `WEBSITE_HOSTNAME` and skips the localtunnel there.
 
-Older deploy configs are still checked in and kept in sync manually: `render.yaml` (Render), `fly.toml` + `Dockerfile` (Fly.io), and `Procfile` (Heroku-style) — all just run `npm start`. `.env.example` is the canonical list of required env vars (Shopify proxy secret + `MS_*`/`SHAREPOINT_*` Graph settings).
+**Deploying:**
+```bash
+az webapp deploy --name yog-st4-form --resource-group st4-pdf-signer-rg --src-path <zip> --type zip
+```
+The zip must be **source-only, no `node_modules`** — `SCM_DO_BUILD_DURING_DEPLOYMENT=true` (already set as an app setting) makes Oryx run `npm install` server-side. When building the zip on Windows, **PowerShell's `Compress-Archive` writes backslash path separators inside the zip** (`server\function.json` instead of `server/function.json`), which breaks anything that parses directory structure from the archive — use Python's `zipfile` module instead (always emits forward slashes), excluding `.git`, `node_modules`, `scripts`, `legacy`, `.env`, and `*.md`.
+
+**Before every deploy, sync `data/templates.json` from the live app first** (`GET /api/templates/:id` for each template, overwrite the local file) and diff it against local — the deploy zip includes whatever's in that file, and the App Service filesystem is writable, so merchants can (and do) edit templates live through the Designer between deploys. Deploying a stale local copy silently overwrites their work. There is no template storage outside this one JSON file.
+
+### Shopify CLI
+
+`shopify app config link` and `shopify app deploy`'s interactive prompts (organization/app selection, config file naming) need a real TTY and fail even through this environment's `!`-prefixed "run it yourself" pathway — there's no way to satisfy them non-interactively, and `winpty`/similar TTY-emulation tools don't help either (no underlying console handle to attach to). Workaround: create/link the app via the Dev Dashboard web UI to get a `client_id`, hand-edit `shopify.app.toml` (validate with `shopify app config validate --client-id=...`), then `shopify app deploy --client-id=... --allow-updates` — both flags avoid the interactive path entirely.
+
+`shopify.app.toml` schema notes (the field names are stricter than they look): top-level `embedded` must be a **boolean**, not a `[embedded]` table with sub-keys; `[auth]` needs `redirect_urls` (an array, not `redirect_url`); `[webhooks]` needs `api_version` even if no webhooks are configured; `[app_proxy]` needs `url` + `subpath` + `prefix` (not `path_prefix`). `shopify app config validate` catches all of this before you waste a deploy on it.
+
+New Dev-Dashboard apps (as opposed to classic Partner Dashboard apps) need a **Distribution method** set once, from the Dev Dashboard UI, before *any* install works — otherwise Shopify refuses with "This app can't be installed yet," and there's no CLI command for it. For a single-merchant app, "Custom distribution" is right; it then hands you a signed install link (`admin.shopify.com/store/{store}/oauth/install_custom_app?client_id=...&signature=...`) — use that exact link, not a hand-built `/admin/oauth/authorize` URL (which 401s as "Unauthorized Access" for this app type).
+
+Older deploy configs are still checked in and kept in sync manually: `render.yaml` (Render), `fly.toml` + `Dockerfile` (Fly.io), and `Procfile` (Heroku-style) — all just run `npm start`, but none of them have been exercised since the move to Azure App Service; treat them as unverified. `.env.example` is the canonical list of required env vars (Shopify proxy secret + `MS_*`/`SHAREPOINT_*` Graph settings).
 
 ### One-off scripts (`scripts/`)
 
