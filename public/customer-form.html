@@ -480,10 +480,14 @@ async function buildFilledPdfBytes() {
     const f = template.fields[i];
     if (f.type === 'text' && fieldValues[i]) {
       const x = f.x / canvasScale;
-      const y = ph - (f.y / canvasScale) - (f.h / canvasScale) - 2;
+      // drawText's y is the text BASELINE, not the box top — position it a
+      // little above the field box's bottom edge (not below it) so filled
+      // text sits on/above the printed line instead of crossing through it.
+      const fontSize = f.fontSize || 14;
+      const y = ph - (f.y / canvasScale) - (f.h / canvasScale) + fontSize * 0.2;
       page.drawText(fieldValues[i], {
         x, y,
-        size: f.fontSize || 14,
+        size: fontSize,
         color: PDFLib.rgb(0.11, 0.17, 0.18),
       });
     }
