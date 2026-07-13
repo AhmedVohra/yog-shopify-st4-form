@@ -19,47 +19,21 @@
  */
 
 const fetch = require('node-fetch');
+const { GRAPH, getGraphToken, graphGet } = require('./graphAuth');
 
-const GRAPH = 'https://graph.microsoft.com/v1.0';
-
-let cachedToken = null;   // { token, expiresAt (ms epoch) }
 let cachedSiteId = null;
 let cachedDriveId = null;
 
-async function getGraphToken() {
-  if (cachedToken && cachedToken.expiresAt - Date.now() > 2 * 60 * 1000) {
-    return cachedToken.token;
-  }
+// SharePoint always lives in the merchant's own tenant (this is where their
+// document library actually is) — never the vendor mail-sending tenant below.
+function sharepointCredentials() {
   const { MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET } = process.env;
-  if (!MS_TENANT_ID || !MS_CLIENT_ID || !MS_CLIENT_SECRET) {
-    throw new Error('SharePoint upload not configured: set MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET');
-  }
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: MS_CLIENT_ID,
-    client_secret: MS_CLIENT_SECRET,
-    scope: 'https://graph.microsoft.com/.default'
-  });
-  const res = await fetch(`https://login.microsoftonline.com/${MS_TENANT_ID}/oauth2/v2.0/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString()
-  });
-  const json = await res.json();
-  if (!res.ok || !json.access_token) {
-    throw new Error('Graph token request failed: ' + (json.error_description || JSON.stringify(json)));
-  }
-  cachedToken = { token: json.access_token, expiresAt: Date.now() + (json.expires_in * 1000) };
-  return cachedToken.token;
-}
-
-async function graphGet(pathname, token) {
-  const res = await fetch(`${GRAPH}${pathname}`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(`Graph GET ${pathname} failed: ` + JSON.stringify(json.error || json));
-  return json;
+  return {
+    tenantId: MS_TENANT_ID,
+    clientId: MS_CLIENT_ID,
+    clientSecret: MS_CLIENT_SECRET,
+    label: 'MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET'
+  };
 }
 
 async function resolveSiteId(token) {
@@ -106,7 +80,7 @@ async function resolveDriveId(token) {
  * Returns { id, webUrl, name } of the created drive item.
  */
 async function uploadPdfToSharePoint(filename, pdfBuffer) {
-  const token = await getGraphToken();
+  const token = await getGraphToken(sharepointCredentials());
   const driveId = await resolveDriveId(token);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);

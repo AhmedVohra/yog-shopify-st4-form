@@ -138,6 +138,7 @@ let pdfDoc = null;
 let signatureImage = null;
 let fieldValues = {};   // Map of field index → value
 let sigFieldIdx = -1;   // Which field index is the signature
+let customerEmail = ''; // ?email= param, e.g. carried over from a signup form — used to email a copy of the signed PDF
 
 const canvas = document.getElementById('pdfCanvas');
 const wrapper = document.getElementById('pdfWrapper');
@@ -149,7 +150,8 @@ async function init() {
   try {
     const params = new URLSearchParams(location.search);
     const templateId = params.get('id');
-    
+    customerEmail = params.get('email') || '';
+
     if (!templateId) {
       showLoadError('No template specified. Add ?id=TEMPLATE_ID to the URL.');
       return;
@@ -526,11 +528,12 @@ async function submitForm() {
     const flattened = await buildFilledPdfBytes();
     const base64 = btoa(String.fromCharCode(...new Uint8Array(flattened)));
 
-    // Send to the server (stored in SharePoint)
+    // Send to the server (stored in SharePoint, and emailed to the customer
+    // if an ?email= param was carried over into this page's URL)
     const res = await fetch(apiBase + '/save-signed-pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: template.pdfFileName, pdfBase64: base64 })
+      body: JSON.stringify({ filename: template.pdfFileName, pdfBase64: base64, email: customerEmail || undefined })
     });
 
     if (!res.ok) {
@@ -539,6 +542,14 @@ async function submitForm() {
     }
 
     status.innerHTML = '<div class="success">✅ Form submitted successfully!<br><small>Your signed PDF has been received.</small></div>';
+
+    // Return to the store (only meaningful in App Proxy mode — a relative
+    // redirect here resolves against the storefront domain the form is
+    // running on; in standalone/direct mode there's no store page to land on).
+    if (apiBase.startsWith('/apps/')) {
+      status.innerHTML += '<div class="status" style="margin-top:8px;">Redirecting…</div>';
+      setTimeout(() => { window.location.href = '/pages/pending-approval'; }, 2500);
+    }
   } catch (err) {
     status.innerHTML = '<div class="error">❌ ' + err.message + '</div>';
     document.getElementById('submitBtn').disabled = false;

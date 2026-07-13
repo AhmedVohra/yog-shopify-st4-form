@@ -40,6 +40,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { uploadPdfToSharePoint } = require('./sharepoint');
+const { sendSignedPdfEmail } = require('./email');
 
 const app = express();
 app.use(express.json({ limit: '25mb' })); // signed PDFs are small, but leave headroom
@@ -107,15 +108,30 @@ app.get('/proxy/api/templates/:id', verifyProxySignature, (req, res) => {
 });
 app.post('/proxy/api/save-signed-pdf', verifyProxySignature, handleSaveSignedPdf);
 
-// Shared by the direct and proxied routes: signed PDFs go to SharePoint only.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Shared by the direct and proxied routes: signed PDFs go to SharePoint,
+// and optionally emailed to the customer (best-effort — a failed email
+// shouldn't fail the submission, since the PDF is already safely stored).
 async function handleSaveSignedPdf(req, res) {
   try {
-    const { filename, pdfBase64 } = req.body;
+    const { filename, pdfBase64, email } = req.body;
     if (!pdfBase64) return res.status(400).json({ error: 'pdfBase64 is required' });
     const buffer = Buffer.from(pdfBase64, 'base64');
     const safeName = (filename || 'signed-document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
     const file = await uploadPdfToSharePoint(safeName, buffer);
-    res.json({ ok: true, fileId: file.id, fileUrl: file.webUrl });
+
+    let emailed = false;
+    if (email && EMAIL_RE.test(email)) {
+      try {
+        await sendSignedPdfEmail(email, safeName, buffer);
+        emailed = true;
+      } catch (emailErr) {
+        console.error('Failed to email signed PDF to', email, emailErr);
+      }
+    }
+
+    res.json({ ok: true, fileId: file.id, fileUrl: file.webUrl, emailed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
