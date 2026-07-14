@@ -76,4 +76,67 @@ async function sendSignedPdfEmail(toEmail, filename, pdfBuffer) {
   console.log(`Emailed signed PDF to ${toEmail}`);
 }
 
-module.exports = { sendSignedPdfEmail };
+
+/**
+ * Emails the customer a link to their personalised ST-4 form.
+ * The link includes applicationId so the Shopify server can call
+ * the Azure Function and update the BC record on submission.
+ *
+ * @param {string} toEmail        - Customer's email address
+ * @param {string} customerName   - Customer's display name (for greeting)
+ * @param {string} formUrl        - Full URL to the form, with applicationId already appended
+ */
+async function sendST4FormLinkEmail(toEmail, customerName, formUrl) {
+  const { MAIL_TENANT_ID, MAIL_CLIENT_ID, MAIL_CLIENT_SECRET, MAIL_FROM } = process.env;
+  if (!MAIL_TENANT_ID || !MAIL_CLIENT_ID || !MAIL_CLIENT_SECRET || !MAIL_FROM) {
+    throw new Error(`Email sending not configured: set ${MAIL_CREDENTIALS_LABEL}`);
+  }
+
+  const token = await getGraphToken({
+    tenantId: MAIL_TENANT_ID,
+    clientId: MAIL_CLIENT_ID,
+    clientSecret: MAIL_CLIENT_SECRET,
+    label: MAIL_CREDENTIALS_LABEL
+  });
+
+  const greeting = customerName ? `Dear ${customerName},` : 'Hello,';
+  const message = {
+    subject: 'Please Complete Your ST-4 Tax Exemption Form',
+    body: {
+      contentType: 'HTML',
+      content: `
+        <p>${greeting}</p>
+        <p>Thank you for your application. To complete the process, please fill out and sign your ST-4 Tax Exemption Form by clicking the button below:</p>
+        <p style="margin: 24px 0;">
+          <a href="${formUrl}"
+             style="background:#1c2b2d;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block;">
+            Complete ST-4 Form
+          </a>
+        </p>
+        <p style="font-size:12px;color:#888;">
+          If the button doesn't work, copy and paste this link into your browser:<br>
+          <a href="${formUrl}">${formUrl}</a>
+        </p>
+        <p>If you have any questions, please don't hesitate to contact us.</p>
+      `
+    },
+    toRecipients: [{ emailAddress: { address: toEmail } }]
+  };
+
+  const res = await fetch(`${GRAPH}/users/${encodeURIComponent(MAIL_FROM)}/sendMail`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ message, saveToSentItems: 'false' })
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error('Graph sendMail failed: ' + text);
+  }
+  console.log(`ST-4 form link emailed to ${toEmail}`);
+}
+
+module.exports = { sendSignedPdfEmail, sendST4FormLinkEmail };

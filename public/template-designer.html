@@ -493,11 +493,21 @@ function shareTemplate() {
   // For Shopify stores, the proxy URL is cleaner:
   // {store}.myshopify.com/apps/pdf-signer/form?id=xxx
   const storeDomain = new URLSearchParams(location.search).get('shop');
-  const proxyLink = storeDomain 
+  const baseLink = storeDomain 
     ? `https://${storeDomain}/apps/pdf-signer/form?id=${currentTemplateId}`
     : directLink;
   
-  const link = proxyLink;
+  // Prompt for applicationId so BC knows which record to update on submission
+  const appId = window.prompt(
+    'Enter the Application ID (APP-xxx) to embed in this link.\n' +
+    'Leave blank to generate a generic link with no BC record linked.',
+    ''
+  );
+  
+  let link = baseLink;
+  if (appId && appId.trim()) {
+    link += `&applicationId=${encodeURIComponent(appId.trim())}`;
+  }
   
   if (isShopifyEmbedded && appBridge) {
     // Use App Bridge to copy or show link
@@ -519,10 +529,19 @@ function previewAsCustomer() {
   if (!currentTemplateId) return;
   const directLink = `/form?id=${currentTemplateId}`;
   const storeDomain = new URLSearchParams(location.search).get('shop');
-  const proxyLink = storeDomain 
+  let proxyLink = storeDomain 
     ? `https://${storeDomain}/apps/pdf-signer/form?id=${currentTemplateId}`
     : directLink;
   
+  // Optionally carry an applicationId into preview (useful for testing)
+  const appId = window.prompt(
+    '(Optional) Enter an Application ID to test BC linking, or click Cancel / leave blank for generic preview.',
+    ''
+  );
+  if (appId && appId.trim()) {
+    proxyLink += `&applicationId=${encodeURIComponent(appId.trim())}`;
+  }
+
   if (isShopifyEmbedded && appBridge) {
     // In Shopify admin, use App Bridge to open a new tab
     window.open(proxyLink, '_blank');

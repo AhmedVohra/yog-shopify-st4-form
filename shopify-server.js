@@ -1,4 +1,4 @@
-﻿/**
+/**
  * shopify-server.js
  * -----------------------------------------------------------------------
  * Minimal backend that receives the signed PDF from pdf-signer.html and
@@ -40,7 +40,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { uploadPdfToSharePoint } = require('./sharepoint');
-const { sendSignedPdfEmail } = require('./email');
+const { sendSignedPdfEmail, sendST4FormLinkEmail } = require('./email');
 
 const app = express();
 app.use(express.json({ limit: '25mb' })); // signed PDFs are small, but leave headroom
@@ -113,9 +113,10 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Shared by the direct and proxied routes: signed PDFs go to SharePoint,
 // and optionally emailed to the customer (best-effort — a failed email
 // shouldn't fail the submission, since the PDF is already safely stored).
+// If applicationId is provided, also notifies the Azure Function to update BC.
 async function handleSaveSignedPdf(req, res) {
   try {
-    const { filename, pdfBase64, email } = req.body;
+    const { filename, pdfBase64, email, applicationId } = req.body;
     if (!pdfBase64) return res.status(400).json({ error: 'pdfBase64 is required' });
     const buffer = Buffer.from(pdfBase64, 'base64');
     const safeName = (filename || 'signed-document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -131,7 +132,39 @@ async function handleSaveSignedPdf(req, res) {
       }
     }
 
-    res.json({ ok: true, fileId: file.id, fileUrl: file.webUrl, emailed });
+    // Notify BC via Azure Function — best-effort, non-blocking
+    let bcNotified = false;
+    if (applicationId && process.env.AZURE_FUNCTION_URL) {
+      try {
+        // AZURE_FUNCTION_URL may already carry ?code=<function key>
+        const azureUrl = process.env.AZURE_FUNCTION_URL;
+        const azureRes = await fetch(
+          `${azureUrl}${azureUrl.includes('?') ? '&' : '?'}type=st4notify`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': process.env.AZURE_FUNCTION_API_KEY || ''
+            },
+            body: JSON.stringify({
+              applicationId,
+              st4PdfUrl: file.webUrl
+            })
+          }
+        );
+        if (azureRes.ok) {
+          bcNotified = true;
+          console.log(`BC notified for applicationId: ${applicationId}`);
+        } else {
+          const errBody = await azureRes.text().catch(() => '');
+          console.error(`Azure Function returned ${azureRes.status} for BC notify: ${errBody}`);
+        }
+      } catch (bcErr) {
+        console.error('BC notification failed (non-fatal):', bcErr.message);
+      }
+    }
+
+    res.json({ ok: true, fileId: file.id, fileUrl: file.webUrl, emailed, bcNotified });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -440,6 +473,35 @@ app.post('/api/store/disable-password', async (req, res) => {
 
 // ---------- Save signed PDF (direct route; same handler as the proxy) ----------
 app.post('/api/save-signed-pdf', handleSaveSignedPdf);
+
+// ---------- Send ST-4 form link to customer ----------
+// Called by the Azure Function after a new application is submitted, so the
+// customer receives a personalised link with their applicationId already in the URL.
+// Body: { email, customerName, applicationId, templateId }
+app.post('/api/send-st4-link', async (req, res) => {
+  try {
+    const { email, customerName, applicationId, templateId } = req.body || {};
+    if (!email)          return res.status(400).json({ error: 'email is required' });
+    if (!applicationId) return res.status(400).json({ error: 'applicationId is required' });
+    if (!templateId)    return res.status(400).json({ error: 'templateId is required' });
+
+    const APP_ORIGIN = process.env.APP_URL || `http://localhost:${process.env.PORT || 3001}`;
+    const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
+
+    // Prefer the proxied store URL so customers see the form under the store domain
+    const baseUrl = SHOPIFY_STORE
+      ? `https://${SHOPIFY_STORE}/apps/pdf-signer/form?id=${encodeURIComponent(templateId)}`
+      : `${APP_ORIGIN}/form?id=${encodeURIComponent(templateId)}`;
+
+    const formUrl = `${baseUrl}&email=${encodeURIComponent(email)}&applicationId=${encodeURIComponent(applicationId)}`;
+
+    await sendST4FormLinkEmail(email, customerName || '', formUrl);
+    res.json({ ok: true, formUrl });
+  } catch (err) {
+    console.error('send-st4-link error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Azure App Service (Linux) sets PORT itself; locally we fall back to 3001.
 const PORT = process.env.PORT || 3001;

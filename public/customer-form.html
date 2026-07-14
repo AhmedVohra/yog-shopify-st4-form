@@ -139,6 +139,7 @@ let signatureImage = null;
 let fieldValues = {};   // Map of field index → value
 let sigFieldIdx = -1;   // Which field index is the signature
 let customerEmail = ''; // ?email= param, e.g. carried over from a signup form — used to email a copy of the signed PDF
+let applicationId = ''; // ?applicationId= param — BC application record to update after submission
 
 const canvas = document.getElementById('pdfCanvas');
 const wrapper = document.getElementById('pdfWrapper');
@@ -151,6 +152,7 @@ async function init() {
     const params = new URLSearchParams(location.search);
     const templateId = params.get('id');
     customerEmail = params.get('email') || '';
+    applicationId = params.get('applicationId') || '';
 
     if (!templateId) {
       showLoadError('No template specified. Add ?id=TEMPLATE_ID to the URL.');
@@ -533,7 +535,12 @@ async function submitForm() {
     const res = await fetch(apiBase + '/save-signed-pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: template.pdfFileName, pdfBase64: base64, email: customerEmail || undefined })
+      body: JSON.stringify({
+        filename: template.pdfFileName,
+        pdfBase64: base64,
+        email: customerEmail || undefined,
+        applicationId: applicationId || undefined
+      })
     });
 
     if (!res.ok) {
