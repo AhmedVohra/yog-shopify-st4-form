@@ -10,6 +10,8 @@ an iframe). Signed PDFs are stored in SharePoint.
 |------|---------|
 | `shopify-server.js` | Express backend — API, OAuth, App Proxy, Liquid-fragment rendering |
 | `sharepoint.js` | Uploads signed PDFs to a SharePoint document library via Microsoft Graph |
+| `email.js` | Emails the customer their signed-PDF copy and their personalised ST-4 form link via Microsoft Graph |
+| `graphAuth.js` | Shared Graph client-credentials token fetch used by `sharepoint.js` and `email.js` |
 | `public/template-designer.html` | Drag-and-drop PDF template builder (embedded in Shopify Admin) |
 | `public/customer-form.html` | Customer-facing fill & sign form (served on your storefront) |
 | `data/templates.json` | Local JSON storage for templates (see note below — this is live app data, not a seed file) |
@@ -46,7 +48,18 @@ graph TD
     E -->|Upload via Microsoft Graph| G[SharePoint document library]
     C -->|Load| F
     C -->|Load| B
+    H[Azure Function: CustomerApplication] -->|POST /api/send-st4-link| E
+    E -->|Email form link / signed-PDF copy| I[Customer inbox]
+    E -->|POST type=st4notify| H
+    H -->|Update application record| J[Azure SQL / Business Central]
 ```
+
+There is also an optional round-trip with a separate **Business Central Azure
+Function** (its own repo): the function emails customers a personalised form
+link through this server (`/api/send-st4-link`), and when the signed PDF comes
+back in with an `applicationId`, this server notifies the function
+(`type=st4notify`) to update the BC application record. See `CLAUDE.md`'s
+"Azure Function round-trip" section for the two-key auth details.
 
 The customer form is **not** an iframe. `GET /proxy/form` returns a body
 fragment (`Content-Type: application/liquid`) that Shopify merges directly
@@ -132,6 +145,20 @@ SHAREPOINT_DRIVE_ID=...        # or SHAREPOINT_HOSTNAME + SHAREPOINT_SITE_PATH
 SHAREPOINT_FOLDER=...          # optional subfolder within the library
 ```
 
+Customer emails (separate Entra app registration from `MS_*` — see `.env.example`):
+```
+MAIL_TENANT_ID=...
+MAIL_CLIENT_ID=...
+MAIL_CLIENT_SECRET=...
+MAIL_FROM=...                  # must be a licensed Exchange Online mailbox
+```
+
+Business Central notification (optional — only if using the Azure Function integration):
+```
+AZURE_FUNCTION_URL=...         # full trigger URL INCLUDING ?code=<function key>
+AZURE_FUNCTION_API_KEY=...     # must match an entry in the function's API_KEYS setting
+```
+
 ### 4. Install the App on Your Store
 
 Use the signed custom-distribution install link from step 1 — not a
@@ -150,8 +177,19 @@ Each has a `/proxy/api/...` equivalent for App Proxy requests (signature-verifie
 
 ### Signed PDF
 - `POST /api/save-signed-pdf` — Upload a signed PDF to SharePoint
-  - Body: `{ filename, pdfBase64 }`
+  - Body: `{ filename, pdfBase64, email?, applicationId? }`
+  - `email` (optional): the customer also gets a copy of the signed PDF by email
+  - `applicationId` (optional): the server notifies the Business Central Azure Function
+    (`type=st4notify`) so the application record is updated with the signed-PDF URL
   - `/proxy/api/save-signed-pdf` is the App Proxy equivalent
+
+### ST-4 form link email
+- `POST /api/send-st4-link` — Email a customer their personalised form link
+  - Body: `{ email, customerName?, applicationId, templateId }`
+  - Server-to-server only (called by the Business Central Azure Function after an
+    application is submitted); no App Proxy equivalent
+  - The link embeds `email` and `applicationId` so the eventual submission closes
+    the loop back to BC — see `CLAUDE.md`'s "Azure Function round-trip" section
 
 ### OAuth (only needed if you install via `/auth` instead of the custom-distribution link)
 - `GET /auth?shop=STORE` — Initiate Shopify OAuth install
