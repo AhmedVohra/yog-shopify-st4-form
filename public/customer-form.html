@@ -511,6 +511,17 @@ function checkSubmitReady() {
   btn.disabled = !allRequired;
 }
 
+// String.fromCharCode(...bytes) blows the call stack on large PDFs (each
+// byte becomes a function argument) — chunk it instead.
+function bytesToBase64(bytes) {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 // Draws every field's current value onto a fresh copy of the source PDF and
 // returns the flattened bytes. Shared by submitForm() (uploads it) and
 // downloadPdf() (saves it locally) so the fill-in logic lives in one place.
@@ -574,7 +585,7 @@ async function submitForm() {
 
   try {
     const flattened = await buildFilledPdfBytes();
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(flattened)));
+    const base64 = bytesToBase64(flattened);
 
     // Send to the server (stored in SharePoint, and emailed to the customer
     // if an ?email= param was carried over into this page's URL)
