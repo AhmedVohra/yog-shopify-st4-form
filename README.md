@@ -44,6 +44,7 @@ graph TD
     B -->|Save| C[data/templates.json]
     D[Storefront: yourstore.com/apps/pdf-signer/form?id=...] -->|App Proxy| E[shopify-server.js]
     E -->|Liquid fragment| F[Customer Form, rendered inside theme]
+    F -->|GET st4-status on load, if applicationId present| E
     F -->|Submit Signed PDF| E
     E -->|Upload via Microsoft Graph| G[SharePoint document library]
     C -->|Load| F
@@ -51,6 +52,7 @@ graph TD
     H[Azure Function: CustomerApplication] -->|POST /api/send-st4-link| E
     E -->|Email form link / signed-PDF copy| I[Customer inbox]
     E -->|POST type=st4notify| H
+    E -->|GET applicationId, for st4-status| H
     H -->|Update application record| J[Azure SQL / Business Central]
 ```
 
@@ -58,7 +60,11 @@ There is also an optional round-trip with a separate **Business Central Azure
 Function** (its own repo): the function emails customers a personalised form
 link through this server (`/api/send-st4-link`), and when the signed PDF comes
 back in with an `applicationId`, this server notifies the function
-(`type=st4notify`) to update the BC application record. See `CLAUDE.md`'s
+(`type=st4notify`) to update the BC application record. Since customers can
+reach the same ST-4 form twice for one `applicationId` (an immediate redirect
+from signup, and the emailed fallback link), the form also checks
+`GET /api/st4-status/:applicationId` on load and shows "already submitted"
+instead of a fillable form if it's already been signed. See `CLAUDE.md`'s
 "Azure Function round-trip" section for the two-key auth details.
 
 The customer form is **not** an iframe. `GET /proxy/form` returns a body
@@ -191,6 +197,19 @@ Each has a `/proxy/api/...` equivalent for App Proxy requests (signature-verifie
   - The link embeds `email` and `applicationId` so the eventual submission closes
     the loop back to BC — see `CLAUDE.md`'s "Azure Function round-trip" section
 
+### ST-4 submission status
+- `GET /api/st4-status/:applicationId` — Check whether an application's ST-4 has
+  already been signed and submitted
+  - Response: `{ submitted: boolean, status: string|null, checkedOk: boolean }`
+  - Used by `customer-form.html` on load to detect the case where a customer
+    reaches the form twice for the same `applicationId` (immediate post-signup
+    redirect + `send-st4-link` fallback email both land here) and show an
+    "already submitted" message instead of a fillable form a second time
+  - Best-effort/fail-open: `checkedOk: false` means the check itself couldn't be
+    confirmed (e.g. the Azure Function's SQL backend is cold-starting) — treated
+    as "not submitted" so a slow check never blocks a legitimate signer
+  - `/proxy/api/st4-status/:applicationId` is the App Proxy equivalent
+
 ### OAuth (only needed if you install via `/auth` instead of the custom-distribution link)
 - `GET /auth?shop=STORE` — Initiate Shopify OAuth install
 - `GET /auth/callback` — OAuth callback (Shopify redirects here)
@@ -199,6 +218,7 @@ Each has a `/proxy/api/...` equivalent for App Proxy requests (signature-verifie
 - `GET /proxy/form?id=TEMPLATE_ID` — Customer form, returned as a Liquid fragment for theme embedding
 - `GET /proxy/api/templates/:id` — Template data (proxied)
 - `POST /proxy/api/save-signed-pdf` — Save signed PDF (proxied)
+- `GET /proxy/api/st4-status/:applicationId` — ST-4 submission status check (proxied)
 
 ## Deploying
 

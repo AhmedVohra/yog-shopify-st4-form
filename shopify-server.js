@@ -107,6 +107,7 @@ app.get('/proxy/api/templates/:id', verifyProxySignature, (req, res) => {
   res.json(tpl);
 });
 app.post('/proxy/api/save-signed-pdf', verifyProxySignature, handleSaveSignedPdf);
+app.get('/proxy/api/st4-status/:applicationId', verifyProxySignature, handleST4Status);
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -168,6 +169,52 @@ async function handleSaveSignedPdf(req, res) {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
+  }
+}
+
+// Shared by the direct and proxied routes: checks whether an application's
+// ST-4 has already been submitted (st4FormAttached in Azure SQL), so
+// customer-form.html can refuse to show the form a second time (a customer
+// can reach it twice — once via the apply-account redirect, once via the
+// send-st4-link fallback email). Best-effort, fail-open — if the Azure
+// Function is unreachable or slow (its Azure SQL backend auto-pauses when
+// idle and can take up to ~60s to resume), report "not submitted" rather
+// than block a legitimate customer from signing.
+async function handleST4Status(req, res) {
+  const { applicationId } = req.params;
+  if (!applicationId) return res.status(400).json({ error: 'applicationId is required' });
+
+  if (!process.env.AZURE_FUNCTION_URL) {
+    return res.json({ submitted: false, status: null, checkedOk: false });
+  }
+
+  // AZURE_FUNCTION_URL may already carry ?code=<function key>
+  const azureUrl = process.env.AZURE_FUNCTION_URL;
+  const statusUrl = `${azureUrl}${azureUrl.includes('?') ? '&' : '?'}applicationId=${encodeURIComponent(applicationId)}`;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  try {
+    const azureRes = await fetch(statusUrl, { signal: controller.signal });
+    if (azureRes.status === 404) {
+      return res.json({ submitted: false, status: null, checkedOk: true });
+    }
+    if (!azureRes.ok) {
+      const errBody = await azureRes.text().catch(() => '');
+      console.error(`st4-status: Azure Function returned ${azureRes.status}: ${errBody}`);
+      return res.json({ submitted: false, status: null, checkedOk: false });
+    }
+    const data = await azureRes.json();
+    res.json({
+      submitted: data.st4FormAttached === true,
+      status: data.st4Status || null,
+      checkedOk: true
+    });
+  } catch (err) {
+    console.error('st4-status check failed (non-fatal, failing open):', err.message);
+    res.json({ submitted: false, status: null, checkedOk: false });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -473,6 +520,7 @@ app.post('/api/store/disable-password', async (req, res) => {
 
 // ---------- Save signed PDF (direct route; same handler as the proxy) ----------
 app.post('/api/save-signed-pdf', handleSaveSignedPdf);
+app.get('/api/st4-status/:applicationId', handleST4Status);
 
 // ---------- Send ST-4 form link to customer ----------
 // Called by the Azure Function after a new application is submitted, so the

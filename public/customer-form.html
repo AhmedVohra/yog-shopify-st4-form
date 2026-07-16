@@ -153,6 +153,9 @@ async function init() {
     const templateId = params.get('id');
     customerEmail = params.get('email') || '';
     applicationId = params.get('applicationId') || '';
+    // Kick off alongside the template fetch below so the common (not-yet-
+    // submitted) case adds ~zero perceived latency.
+    const submittedCheckPromise = checkAlreadySubmitted(applicationId);
 
     if (!templateId) {
       showLoadError('No template specified. Add ?id=TEMPLATE_ID to the URL.');
@@ -199,7 +202,17 @@ async function init() {
       showLoadError('Invalid template data received.');
       return;
     }
-    
+
+    if (applicationId) {
+      const subStatus = await submittedCheckPromise;
+      if (timedOut) return;
+      if (subStatus.submitted) {
+        clearTimeout(timeout);
+        showAlreadySubmitted();
+        return;
+      }
+    }
+
     document.getElementById('formTitle').textContent = template.name;
     document.getElementById('templateInfo').textContent = `${(template.fields || []).length} field(s)`;
     document.title = template.name + ' — Fill & Sign';
@@ -251,6 +264,32 @@ function showLoadError(message) {
   loadingMsg.style.color = '#b3452f';
   const spinner = loadingState.querySelector('.spinner');
   if (spinner) spinner.style.display = 'none';
+}
+
+// Checks whether this applicationId already has a signed ST-4 on file (a
+// customer can reach this form twice — once via the apply-account redirect,
+// once via the send-st4-link fallback email). Never rejects — any failure
+// (network error, timeout, server misconfiguration) resolves to a fail-open
+// "not submitted" result so a check outage never blocks a legitimate signing.
+function checkAlreadySubmitted(appId) {
+  if (!appId) return Promise.resolve({ submitted: false, checkedOk: true });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  return fetch(apiBase + '/st4-status/' + encodeURIComponent(appId), { signal: controller.signal })
+    .then(res => res.ok ? res.json() : { submitted: false, checkedOk: false })
+    .catch(err => {
+      console.warn('st4-status check failed client-side (failing open):', err.message);
+      return { submitted: false, checkedOk: false };
+    })
+    .finally(() => clearTimeout(timeoutId));
+}
+
+function showAlreadySubmitted() {
+  loadingMsg.textContent = 'This form has already been submitted. If you believe this is a mistake, please contact us.';
+  loadingMsg.style.color = '#2e7d32';
+  const spinner = loadingState.querySelector('.spinner');
+  if (spinner) spinner.style.display = 'none';
+  document.getElementById('formPanel').style.display = 'none';
 }
 
 // ---------- Render PDF ----------
