@@ -140,6 +140,7 @@ let fieldValues = {};   // Map of field index → value
 let sigFieldIdx = -1;   // Which field index is the signature
 let customerEmail = ''; // ?email= param, e.g. carried over from a signup form — used to email a copy of the signed PDF
 let applicationId = ''; // ?applicationId= param — BC application record to update after submission
+let customerName = '';  // ?name= param — used to group this lead's SharePoint files and to chain into the next form
 
 const canvas = document.getElementById('pdfCanvas');
 const wrapper = document.getElementById('pdfWrapper');
@@ -153,9 +154,10 @@ async function init() {
     const templateId = params.get('id');
     customerEmail = params.get('email') || '';
     applicationId = params.get('applicationId') || '';
+    customerName = params.get('name') || '';
     // Kick off alongside the template fetch below so the common (not-yet-
     // submitted) case adds ~zero perceived latency.
-    const submittedCheckPromise = checkAlreadySubmitted(applicationId);
+    const submittedCheckPromise = checkAlreadySubmitted(applicationId, templateId);
 
     if (!templateId) {
       showLoadError('No template specified. Add ?id=TEMPLATE_ID to the URL.');
@@ -266,16 +268,21 @@ function showLoadError(message) {
   if (spinner) spinner.style.display = 'none';
 }
 
-// Checks whether this applicationId already has a signed ST-4 on file (a
-// customer can reach this form twice — once via the apply-account redirect,
-// once via the send-st4-link fallback email). Never rejects — any failure
-// (network error, timeout, server misconfiguration) resolves to a fail-open
-// "not submitted" result so a check outage never blocks a legitimate signing.
-function checkAlreadySubmitted(appId) {
+// Checks whether this applicationId already has a signed copy of THIS
+// template's form on file (a customer can reach a given form twice — once
+// via the apply-account/chained redirect, once via a fallback email link).
+// templateId tells the server which form type to check (see handleST4Status)
+// since more than one form can now exist per applicationId. Never rejects —
+// any failure (network error, timeout, server misconfiguration) resolves to
+// a fail-open "not submitted" result so a check outage never blocks a
+// legitimate signing.
+function checkAlreadySubmitted(appId, templateId) {
   if (!appId) return Promise.resolve({ submitted: false, checkedOk: true });
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
-  return fetch(apiBase + '/st4-status/' + encodeURIComponent(appId), { signal: controller.signal })
+  const url = apiBase + '/st4-status/' + encodeURIComponent(appId)
+    + (templateId ? '?templateId=' + encodeURIComponent(templateId) : '');
+  return fetch(url, { signal: controller.signal })
     .then(res => res.ok ? res.json() : { submitted: false, checkedOk: false })
     .catch(err => {
       console.warn('st4-status check failed client-side (failing open):', err.message);
@@ -578,7 +585,9 @@ async function submitForm() {
         filename: template.pdfFileName,
         pdfBase64: base64,
         email: customerEmail || undefined,
-        applicationId: applicationId || undefined
+        applicationId: applicationId || undefined,
+        name: customerName || undefined,
+        templateId: template.id || undefined
       })
     });
 
@@ -589,10 +598,22 @@ async function submitForm() {
 
     status.innerHTML = '<div class="success">✅ Form submitted successfully!<br><small>Your signed PDF has been received.</small></div>';
 
-    // Return to the store (only meaningful in App Proxy mode — a relative
-    // redirect here resolves against the storefront domain the form is
-    // running on; in standalone/direct mode there's no store page to land on).
-    if (apiBase.startsWith('/apps/')) {
+    // If this template chains into another one (e.g. a multi-form intake
+    // flow), send the customer there next, carrying the same identifiers
+    // forward so both PDFs land under the same SharePoint lead folder and
+    // the same BC application record. Otherwise fall back to returning to
+    // the store (only meaningful in App Proxy mode — a relative redirect
+    // here resolves against the storefront domain the form is running on;
+    // in standalone/direct mode there's no store page to land on).
+    const formPath = apiBase.startsWith('/apps/') ? '/apps/pdf-signer/form' : '/form';
+    if (template.nextTemplateId) {
+      const nextParams = new URLSearchParams({ id: template.nextTemplateId });
+      if (customerEmail) nextParams.set('email', customerEmail);
+      if (applicationId) nextParams.set('applicationId', applicationId);
+      if (customerName) nextParams.set('name', customerName);
+      status.innerHTML += '<div class="status" style="margin-top:8px;">Redirecting to the next form…</div>';
+      setTimeout(() => { window.location.href = `${formPath}?${nextParams.toString()}`; }, 2500);
+    } else if (apiBase.startsWith('/apps/')) {
       status.innerHTML += '<div class="status" style="margin-top:8px;">Redirecting…</div>';
       setTimeout(() => { window.location.href = '/pages/pending-approval'; }, 2500);
     }

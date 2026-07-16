@@ -73,18 +73,78 @@ async function resolveDriveId(token) {
   return cachedDriveId;
 }
 
+// Shared sanitizer for anything that becomes a Graph path segment (filenames
+// and, below, per-lead folder names) — same character class used throughout
+// the app for user-supplied names going into a path.
+function sanitizeName(str) {
+  return (str || '').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+// Builds a human-readable, collision-resistant per-lead SharePoint folder
+// name, e.g. buildLeadFolderName('Jane A. Doe', 'APP-6091e07a1234') ->
+// "Jane_A._Doe - e07a1234". The applicationId suffix (last 8 alphanumeric
+// chars) guarantees uniqueness between two customers who share a name.
+function buildLeadFolderName(fullName, applicationId) {
+  const safe = sanitizeName(fullName || 'Customer').replace(/_+/g, '_').replace(/^_+|_+$/g, '') || 'Customer';
+  const suffix = (applicationId || '').replace(/[^a-zA-Z0-9]/g, '').slice(-8) || 'unknown';
+  return `${safe} - ${suffix}`;
+}
+
+// Ensures a (possibly nested, one-level) lead folder exists under baseFolder.
+// Graph's path-based PUT .../content does NOT auto-create missing
+// intermediate folders, so this must run before uploading into a new
+// per-lead subfolder. A 409 from the create call means another concurrent
+// upload for the same lead (e.g. the second PDF) already created it.
+async function ensureLeadFolder(token, driveId, baseFolder, leadFolderName) {
+  const fullPath = (baseFolder ? baseFolder + '/' : '') + leadFolderName;
+  const encodedFullPath = fullPath.split('/').map(encodeURIComponent).join('/');
+
+  const getRes = await fetch(`${GRAPH}/drives/${driveId}/root:/${encodedFullPath}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (getRes.ok) return; // already exists
+  if (getRes.status !== 404) {
+    const errJson = await getRes.json().catch(() => ({}));
+    throw new Error(`SharePoint folder lookup failed for "${leadFolderName}": ` + JSON.stringify(errJson.error || errJson));
+  }
+
+  const parentChildrenUrl = baseFolder
+    ? `${GRAPH}/drives/${driveId}/root:/${baseFolder.split('/').map(encodeURIComponent).join('/')}:/children`
+    : `${GRAPH}/drives/${driveId}/root/children`;
+  const createRes = await fetch(parentChildrenUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: leadFolderName, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
+  });
+  if (!createRes.ok && createRes.status !== 409) {
+    const errJson = await createRes.json().catch(() => ({}));
+    throw new Error(`SharePoint folder creation failed for "${leadFolderName}": ` + JSON.stringify(errJson.error || errJson));
+  }
+}
+
 /**
  * Uploads a PDF buffer to the configured SharePoint library.
  * The stored name is prefixed with a timestamp so repeat submissions
  * never overwrite each other (Graph PUT silently replaces same names).
+ * When folderSegment is given (a per-lead folder name, see
+ * buildLeadFolderName), the file is grouped under baseFolder/folderSegment/
+ * instead of landing flat in baseFolder/ — used so a lead's two form PDFs
+ * (this app now supports more than one form per applicationId) end up
+ * together.
  * Returns { id, webUrl, name } of the created drive item.
  */
-async function uploadPdfToSharePoint(filename, pdfBuffer) {
+async function uploadPdfToSharePoint(filename, pdfBuffer, folderSegment) {
   const token = await getGraphToken(sharepointCredentials());
   const driveId = await resolveDriveId(token);
 
+  const baseFolder = (process.env.SHAREPOINT_FOLDER || '').replace(/^\/+|\/+$/g, '');
+  let folder = baseFolder;
+  if (folderSegment) {
+    await ensureLeadFolder(token, driveId, baseFolder, folderSegment);
+    folder = baseFolder ? `${baseFolder}/${folderSegment}` : folderSegment;
+  }
+
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const folder = (process.env.SHAREPOINT_FOLDER || '').replace(/^\/+|\/+$/g, '');
   const itemPath = (folder ? folder + '/' : '') + `${stamp}_${filename}`;
   const encodedPath = itemPath.split('/').map(encodeURIComponent).join('/');
 
@@ -103,4 +163,4 @@ async function uploadPdfToSharePoint(filename, pdfBuffer) {
   return { id: json.id, webUrl: json.webUrl, name: json.name };
 }
 
-module.exports = { uploadPdfToSharePoint };
+module.exports = { uploadPdfToSharePoint, buildLeadFolderName, sanitizeName };

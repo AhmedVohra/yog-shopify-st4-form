@@ -89,6 +89,8 @@ body.shopify-embedded .toolbar { border-radius: 8px 8px 0 0; }
     <option value="">-- Load template --</option>
   </select>
   <input type="text" id="templateName" placeholder="Template name" style="padding:7px;border:1px solid #ccc;border-radius:6px;font-size:13px;width:180px;">
+  <input type="text" id="nextTemplateId" placeholder="Next template ID (optional)" style="padding:7px;border:1px solid #ccc;border-radius:6px;font-size:13px;width:180px;">
+  <input type="text" id="formType" placeholder="Form type (e.g. st4, page3)" style="padding:7px;border:1px solid #ccc;border-radius:6px;font-size:13px;width:170px;">
   <button class="accent" onclick="saveTemplate()">💾 Save Template</button>
   <button onclick="shareTemplate()" style="display:none;" id="shareBtn">🔗 Share</button>
   <button onclick="previewAsCustomer()" style="display:none;" id="previewBtn">👁️ Preview</button>
@@ -467,9 +469,11 @@ async function saveTemplate() {
   if (!pdfBase64) { alert('Please load a PDF first.'); return; }
 
   setStatus('Saving template…');
+  const nextTemplateId = document.getElementById('nextTemplateId').value.trim() || null;
+  const formType = document.getElementById('formType').value.trim() || null;
   const method = currentTemplateId ? 'PUT' : 'POST';
   const url = currentTemplateId ? `/api/templates/${currentTemplateId}` : '/api/templates';
-  const body = { name, pdfFileName, pdfBase64, fields };
+  const body = { name, pdfFileName, pdfBase64, fields, nextTemplateId, formType };
 
   const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json();
@@ -560,6 +564,8 @@ async function loadTemplate(id) {
 
   currentTemplateId = tpl.id;
   document.getElementById('templateName').value = tpl.name;
+  document.getElementById('nextTemplateId').value = tpl.nextTemplateId || '';
+  document.getElementById('formType').value = tpl.formType || '';
   document.getElementById('deleteBtn').style.display = 'inline-block';
   document.getElementById('shareBtn').style.display = 'inline-block';
   document.getElementById('previewBtn').style.display = 'inline-block';
@@ -586,6 +592,8 @@ async function deleteTemplate() {
   await fetch(`/api/templates/${currentTemplateId}`, { method: 'DELETE' });
   currentTemplateId = null;
   document.getElementById('templateName').value = '';
+  document.getElementById('nextTemplateId').value = '';
+  document.getElementById('formType').value = '';
   document.getElementById('deleteBtn').style.display = 'none';
   await refreshTemplateList();
   setStatus('Template deleted.');

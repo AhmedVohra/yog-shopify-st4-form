@@ -15,6 +15,7 @@
     "node-fetch": "^2.7.0"
   },
   "devDependencies": {
-    "@shopify/cli": "^4.4.0"
+    "@shopify/cli": "^4.4.0",
+    "pdf-lib": "^1.17.1"
   }
 }

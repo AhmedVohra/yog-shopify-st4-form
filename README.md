@@ -46,26 +46,32 @@ graph TD
     E -->|Liquid fragment| F[Customer Form, rendered inside theme]
     F -->|GET st4-status on load, if applicationId present| E
     F -->|Submit Signed PDF| E
-    E -->|Upload via Microsoft Graph| G[SharePoint document library]
+    F -->|Redirect to nextTemplateId's form, if set| D
+    E -->|Upload via Microsoft Graph, grouped per lead| G[SharePoint document library]
     C -->|Load| F
     C -->|Load| B
     H[Azure Function: CustomerApplication] -->|POST /api/send-st4-link| E
     E -->|Email form link / signed-PDF copy| I[Customer inbox]
-    E -->|POST type=st4notify| H
-    E -->|GET applicationId, for st4-status| H
+    E -->|"POST type={formType}notify"| H
+    E -->|GET applicationId + templateId, for st4-status| H
     H -->|Update application record| J[Azure SQL / Business Central]
 ```
 
 There is also an optional round-trip with a separate **Business Central Azure
 Function** (its own repo): the function emails customers a personalised form
-link through this server (`/api/send-st4-link`), and when the signed PDF comes
+link through this server (`/api/send-st4-link`), and when a signed PDF comes
 back in with an `applicationId`, this server notifies the function
-(`type=st4notify`) to update the BC application record. Since customers can
-reach the same ST-4 form twice for one `applicationId` (an immediate redirect
-from signup, and the emailed fallback link), the form also checks
-`GET /api/st4-status/:applicationId` on load and shows "already submitted"
-instead of a fillable form if it's already been signed. See `CLAUDE.md`'s
-"Azure Function round-trip" section for the two-key auth details.
+(`type={formType}notify`, e.g. `st4notify` or `page3notify`) to update the BC
+application record. A lead can now be routed through **more than one form in
+sequence** — a template's optional `nextTemplateId` chains its submission
+straight into the next form instead of ending the flow, and its `formType`
+tag determines which notify type/columns get updated. Since customers can
+reach any given form in the chain twice (an immediate redirect from signup,
+and an emailed fallback link), the form also checks
+`GET /api/st4-status/:applicationId?templateId=…` on load and shows "already
+submitted" instead of a fillable form if that specific form's already been
+signed. See `CLAUDE.md`'s "Azure Function round-trip" section for the
+two-key auth details and the full chaining mechanism.
 
 The customer form is **not** an iframe. `GET /proxy/form` returns a body
 fragment (`Content-Type: application/liquid`) that Shopify merges directly
@@ -176,17 +182,29 @@ hand-built `/admin/oauth/authorize` URL, which 401s for Dev Dashboard apps.
 - `GET /api/templates` — List all templates
 - `GET /api/templates/:id` — Get single template (includes PDF base64 & fields)
 - `POST /api/templates` — Create template
-- `PUT /api/templates/:id` — Update template
+  - Body: `{ name, pdfFileName?, pdfBase64?, fields?, nextTemplateId?, formType? }`
+  - `nextTemplateId` (optional): chains this template's customer-form submission into
+    another template's form instead of ending the flow — see "Azure Function round-trip"
+    in `CLAUDE.md`
+  - `formType` (optional): tags which BC notify `type={formType}notify` this template's
+    signed PDF reports as; defaults to `st4` when unset
+- `PUT /api/templates/:id` — Update template (same optional fields as above)
 - `DELETE /api/templates/:id` — Delete template
 
 Each has a `/proxy/api/...` equivalent for App Proxy requests (signature-verified).
+Both `nextTemplateId` and `formType` are editable from the Template Designer toolbar.
 
 ### Signed PDF
 - `POST /api/save-signed-pdf` — Upload a signed PDF to SharePoint
-  - Body: `{ filename, pdfBase64, email?, applicationId? }`
+  - Body: `{ filename, pdfBase64, email?, applicationId?, name?, templateId? }`
   - `email` (optional): the customer also gets a copy of the signed PDF by email
+  - `name` (optional): used to group this lead's SharePoint files into a per-lead folder
+    (with `applicationId`) instead of the flat library root
+  - `templateId` (optional): resolves the submitted template's `formType`, used to notify
+    with the correct type below; defaults to `st4` if omitted
   - `applicationId` (optional): the server notifies the Business Central Azure Function
-    (`type=st4notify`) so the application record is updated with the signed-PDF URL
+    (`type={formType}notify`, e.g. `st4notify`/`page3notify`) so the application record is
+    updated with the signed-PDF URL
   - `/proxy/api/save-signed-pdf` is the App Proxy equivalent
 
 ### ST-4 form link email
@@ -197,14 +215,17 @@ Each has a `/proxy/api/...` equivalent for App Proxy requests (signature-verifie
   - The link embeds `email` and `applicationId` so the eventual submission closes
     the loop back to BC — see `CLAUDE.md`'s "Azure Function round-trip" section
 
-### ST-4 submission status
-- `GET /api/st4-status/:applicationId` — Check whether an application's ST-4 has
-  already been signed and submitted
+### Form submission status
+- `GET /api/st4-status/:applicationId?templateId=` — Check whether an application's
+  form has already been signed and submitted
+  - `templateId` (optional query param): resolves which form type to check (via the
+    template's `formType`) — omitted or unrecognized falls back to `st4`, so existing
+    callers are unaffected
   - Response: `{ submitted: boolean, status: string|null, checkedOk: boolean }`
   - Used by `customer-form.html` on load to detect the case where a customer
-    reaches the form twice for the same `applicationId` (immediate post-signup
-    redirect + `send-st4-link` fallback email both land here) and show an
-    "already submitted" message instead of a fillable form a second time
+    reaches a given form twice (immediate redirect + `send-st4-link` fallback
+    email both land there) and show an "already submitted" message instead of
+    a fillable form a second time
   - Best-effort/fail-open: `checkedOk: false` means the check itself couldn't be
     confirmed (e.g. the Azure Function's SQL backend is cold-starting) — treated
     as "not submitted" so a slow check never blocks a legitimate signer
@@ -245,7 +266,9 @@ they'd need testing before relying on them.
 
 ## Notes
 - Templates are stored in `data/templates.json` — this is live production data on the deployed app, not just a local seed file, and it's currently the only storage layer (no database). Production should eventually swap this for a real DB; see `CLAUDE.md`'s "Template storage" section before changing anything here in the meantime.
+- A customer's flow can now span more than one template — see `nextTemplateId` above. There's no cap on chain length, but only two templates exist today: a "Customer Application — Page 3" form chaining into the ST-4 form.
 - The template designer works standalone (direct access) and embedded in Shopify Admin.
 - The customer form auto-detects whether it's served via App Proxy or directly, and works as a theme-embedded page (not an iframe) when proxied.
-- `pdf-lib` writes text/signature/checkbox marks directly into the original PDF in the browser — the server never touches PDF bytes except to relay them to SharePoint.
+- `pdf-lib` writes text/signature/checkbox marks directly into the original PDF in the browser — the server never touches PDF bytes except to relay them to SharePoint. A separate devDependency copy of `pdf-lib` also exists purely for the one-off `scripts/extract_page3.js`; see `CLAUDE.md`.
 - Customers can also download a filled copy of the PDF directly (no submission required) via the "Download PDF" button.
+- Signed PDFs are grouped into per-lead SharePoint subfolders (named from the customer's name + applicationId) when both are available; see `CLAUDE.md`'s "PDF handling" section.

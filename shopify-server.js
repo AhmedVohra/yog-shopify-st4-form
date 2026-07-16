@@ -39,7 +39,7 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { uploadPdfToSharePoint } = require('./sharepoint');
+const { uploadPdfToSharePoint, buildLeadFolderName, sanitizeName } = require('./sharepoint');
 const { sendSignedPdfEmail, sendST4FormLinkEmail } = require('./email');
 
 const app = express();
@@ -111,17 +111,35 @@ app.get('/proxy/api/st4-status/:applicationId', verifyProxySignature, handleST4S
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Resolves a template id to its BC notify formType (see handleSaveSignedPdf
+// and handleST4Status) — defaults to 'st4', the only form type that existed
+// before templates could tag themselves, so templates with no formType set
+// (or an unrecognized/missing templateId) keep today's exact 'st4' behavior.
+function resolveFormType(templateId) {
+  if (!templateId) return 'st4';
+  const tpl = loadTemplates().find(t => t.id === templateId);
+  if (tpl && tpl.formType) return tpl.formType.replace(/[^a-zA-Z0-9]/g, '') || 'st4';
+  return 'st4';
+}
+
 // Shared by the direct and proxied routes: signed PDFs go to SharePoint,
 // and optionally emailed to the customer (best-effort — a failed email
 // shouldn't fail the submission, since the PDF is already safely stored).
 // If applicationId is provided, also notifies the Azure Function to update BC.
 async function handleSaveSignedPdf(req, res) {
   try {
-    const { filename, pdfBase64, email, applicationId } = req.body;
+    const { filename, pdfBase64, email, applicationId, name, templateId } = req.body;
     if (!pdfBase64) return res.status(400).json({ error: 'pdfBase64 is required' });
     const buffer = Buffer.from(pdfBase64, 'base64');
-    const safeName = (filename || 'signed-document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const file = await uploadPdfToSharePoint(safeName, buffer);
+    const safeName = sanitizeName(filename || 'signed-document.pdf');
+    // Group into a per-lead SharePoint subfolder only when we have enough
+    // identity to build a stable, human-readable folder name; otherwise
+    // fall back to the flat root (e.g. standalone/manual test submissions).
+    const folderSegment = (applicationId && name) ? buildLeadFolderName(name, applicationId) : undefined;
+    const file = await uploadPdfToSharePoint(safeName, buffer, folderSegment);
+
+    // Which form was just signed, for the BC notify `type=` below.
+    const formType = resolveFormType(templateId);
 
     let emailed = false;
     if (email && EMAIL_RE.test(email)) {
@@ -139,8 +157,11 @@ async function handleSaveSignedPdf(req, res) {
       try {
         // AZURE_FUNCTION_URL may already carry ?code=<function key>
         const azureUrl = process.env.AZURE_FUNCTION_URL;
+        // e.g. st4 -> type=st4notify, body.st4PdfUrl; page3 -> type=page3notify,
+        // body.page3PdfUrl. The Function only has an st4notify handler today —
+        // other formTypes are a no-op there until it adds a matching handler.
         const azureRes = await fetch(
-          `${azureUrl}${azureUrl.includes('?') ? '&' : '?'}type=st4notify`,
+          `${azureUrl}${azureUrl.includes('?') ? '&' : '?'}type=${formType}notify`,
           {
             method: 'POST',
             headers: {
@@ -149,7 +170,7 @@ async function handleSaveSignedPdf(req, res) {
             },
             body: JSON.stringify({
               applicationId,
-              st4PdfUrl: file.webUrl
+              [`${formType}PdfUrl`]: file.webUrl
             })
           }
         );
@@ -173,16 +194,22 @@ async function handleSaveSignedPdf(req, res) {
 }
 
 // Shared by the direct and proxied routes: checks whether an application's
-// ST-4 has already been submitted (st4FormAttached in Azure SQL), so
+// form has already been submitted ({formType}FormAttached in Azure SQL), so
 // customer-form.html can refuse to show the form a second time (a customer
-// can reach it twice — once via the apply-account redirect, once via the
-// send-st4-link fallback email). Best-effort, fail-open — if the Azure
-// Function is unreachable or slow (its Azure SQL backend auto-pauses when
-// idle and can take up to ~60s to resume), report "not submitted" rather
-// than block a legitimate customer from signing.
+// can reach it twice — once via the apply-account/chained redirect, once via
+// a fallback email link). An optional ?templateId= resolves which form type
+// to check (see resolveFormType) — omitted or unrecognized falls back to
+// 'st4', today's only form type, so existing callers are unaffected. Note:
+// the Azure Function doesn't have {formType}FormAttached columns for any
+// formType other than 'st4' yet, so this reports "not submitted" for other
+// form types until that side adds them — safe/inert, not a regression.
+// Best-effort, fail-open — if the Azure Function is unreachable or slow (its
+// Azure SQL backend auto-pauses when idle and can take up to ~60s to
+// resume), report "not submitted" rather than block a legitimate signing.
 async function handleST4Status(req, res) {
   const { applicationId } = req.params;
   if (!applicationId) return res.status(400).json({ error: 'applicationId is required' });
+  const formType = resolveFormType(req.query.templateId);
 
   if (!process.env.AZURE_FUNCTION_URL) {
     return res.json({ submitted: false, status: null, checkedOk: false });
@@ -206,8 +233,8 @@ async function handleST4Status(req, res) {
     }
     const data = await azureRes.json();
     res.json({
-      submitted: data.st4FormAttached === true,
-      status: data.st4Status || null,
+      submitted: data[`${formType}FormAttached`] === true,
+      status: data[`${formType}Status`] || null,
       checkedOk: true
     });
   } catch (err) {
@@ -259,7 +286,7 @@ app.get('/api/templates/:id', (req, res) => {
 
 // Create template
 app.post('/api/templates', (req, res) => {
-  const { name, pdfFileName, pdfBase64, fields } = req.body;
+  const { name, pdfFileName, pdfBase64, fields, nextTemplateId, formType } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
   const templates = loadTemplates();
   const tpl = {
@@ -268,6 +295,11 @@ app.post('/api/templates', (req, res) => {
     pdfFileName: pdfFileName || 'document.pdf',
     pdfBase64: pdfBase64 || '',
     fields: fields || [],
+    nextTemplateId: nextTemplateId || null,
+    // Tags which BC notify `type={formType}notify` this template's signed
+    // PDF is reported as (see handleSaveSignedPdf) — defaults to 'st4' when
+    // unset so pre-existing templates keep sending today's `st4notify`.
+    formType: formType || null,
     createdAt: new Date().toISOString()
   };
   templates.push(tpl);
@@ -280,11 +312,13 @@ app.put('/api/templates/:id', (req, res) => {
   const templates = loadTemplates();
   const idx = templates.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Template not found' });
-  const { name, fields, pdfBase64, pdfFileName } = req.body;
+  const { name, fields, pdfBase64, pdfFileName, nextTemplateId, formType } = req.body;
   if (name !== undefined) templates[idx].name = name;
   if (fields !== undefined) templates[idx].fields = fields;
   if (pdfBase64 !== undefined) templates[idx].pdfBase64 = pdfBase64;
   if (pdfFileName !== undefined) templates[idx].pdfFileName = pdfFileName;
+  if (nextTemplateId !== undefined) templates[idx].nextTemplateId = nextTemplateId || null;
+  if (formType !== undefined) templates[idx].formType = formType || null;
   templates[idx].updatedAt = new Date().toISOString();
   try { saveTemplates(templates); } catch (err) { return templateWriteError(res, err); }
   res.json({ ok: true, template: templates[idx] });
@@ -541,7 +575,8 @@ app.post('/api/send-st4-link', async (req, res) => {
       ? `https://${SHOPIFY_STORE}/apps/pdf-signer/form?id=${encodeURIComponent(templateId)}`
       : `${APP_ORIGIN}/form?id=${encodeURIComponent(templateId)}`;
 
-    const formUrl = `${baseUrl}&email=${encodeURIComponent(email)}&applicationId=${encodeURIComponent(applicationId)}`;
+    const formUrl = `${baseUrl}&email=${encodeURIComponent(email)}&applicationId=${encodeURIComponent(applicationId)}`
+      + (customerName ? `&name=${encodeURIComponent(customerName)}` : '');
 
     await sendST4FormLinkEmail(email, customerName || '', formUrl);
     res.json({ ok: true, formUrl });
