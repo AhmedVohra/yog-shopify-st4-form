@@ -46,7 +46,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 /* Sidebar form fields */
 .field-card { padding: 12px; border: 1px solid #eee; border-radius: 8px; background: #fafafa; }
 .field-card label { font-size: 12px; font-weight: 600; color: #444; display: block; margin-bottom: 4px; }
-.field-card label .req { color: #b3452f; }
+.field-card label .req, .confirm-label .req { color: #b3452f !important; font-weight: 700; }
 .field-card input[type="text"] { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
 .field-card input[type="text"]:focus { outline: none; border-color: #0066cc; }
 .field-card label.checkbox-label { display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer; }
@@ -102,8 +102,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
       <div class="sig-actions">
         <button onclick="clearSignature()">Clear</button>
       </div>
-      <label style="font-size:12px;margin-top:6px;display:flex;align-items:center;gap:6px;">
-        <input type="checkbox" id="agreeTerms"> I confirm this information is accurate
+      <!-- Text and asterisk share one span so the label wraps as a block and the * stays with
+           the last word instead of being flung to the right edge as its own flex item. -->
+      <label class="confirm-label" style="font-size:12px;margin-top:6px;display:flex;align-items:flex-start;gap:6px;">
+        <input type="checkbox" id="agreeTerms" onchange="checkSubmitReady()" style="margin-top:2px;flex-shrink:0;">
+        <span>I confirm this information is accurate and I accept the terms &amp; conditions <span class="req">*</span></span>
       </label>
     </div>
     <button class="btn btn-primary" id="submitBtn" disabled onclick="submitForm()">Submit Signed Form</button>
@@ -137,7 +140,7 @@ let template = null;
 let pdfDoc = null;
 let signatureImage = null;
 let fieldValues = {};   // Map of field index → value
-let sigFieldIdx = -1;   // Which field index is the signature
+let sigHasInk = false;  // True once a stroke is actually drawn — an untouched or cleared pad still yields a valid data URL
 let customerEmail = ''; // ?email= param, e.g. carried over from a signup form — used to email a copy of the signed PDF
 let applicationId = ''; // ?applicationId= param — BC application record to update after submission
 let customerName = '';  // ?name= param — used to group this lead's SharePoint files and to chain into the next form
@@ -317,9 +320,14 @@ function buildFormFields() {
   
   template.fields.forEach((f, i) => {
     if (f.type === 'signature') {
-      sigFieldIdx = i;
-      document.getElementById('signatureArea').style.display = 'block';
-      initSignaturePad();
+      // One pad serves every signature box on the template, so wire it up only once —
+      // calling initSignaturePad() per field would stack a duplicate set of listeners
+      // on the same canvas for each extra signature.
+      const area = document.getElementById('signatureArea');
+      if (area.style.display !== 'block') {
+        area.style.display = 'block';
+        initSignaturePad();
+      }
       return;
     }
     if (f.type === 'label') {
@@ -450,6 +458,7 @@ function initSignaturePad() {
     ctx.strokeStyle = '#1c2b2d';
     ctx.lineTo(e.offsetX, e.offsetY);
     ctx.stroke();
+    sigHasInk = true;
   });
   pad.addEventListener('mouseup', () => { drawing = false; captureSignature(); checkSubmitReady(); });
   pad.addEventListener('mouseleave', () => { drawing = false; captureSignature(); checkSubmitReady(); });
@@ -472,28 +481,31 @@ function initSignaturePad() {
     ctx.strokeStyle = '#1c2b2d';
     ctx.lineTo(t.clientX - rect.left, t.clientY - rect.top);
     ctx.stroke();
+    sigHasInk = true;
   });
   pad.addEventListener('touchend', () => { drawing = false; captureSignature(); checkSubmitReady(); });
 }
 
 function captureSignature() {
   const pad = document.getElementById('sigPad');
-  signatureImage = pad.toDataURL('image/png');
-  
-  // Update overlay
-  if (sigFieldIdx >= 0) {
-    const overlay = wrapper.querySelector(`[data-field="${sigFieldIdx}"]`);
-    if (overlay) {
-      overlay.innerHTML = signatureImage ? '<img src="' + signatureImage + '" alt="Signature">' : 'Click to sign';
-    }
-  }
+  // A blank canvas still returns a perfectly valid data URL, so toDataURL() alone can't tell
+  // "signed" from "clicked the pad once" or "pressed Clear" — sigHasInk is the real signal, and
+  // checkSubmitReady() gates a required signature on it.
+  signatureImage = sigHasInk ? pad.toDataURL('image/png') : null;
+
+  // Paint every signature overlay, not just one: a template can carry several signature boxes
+  // (Credit Terms has Corporate Authorization + Guarantor), and buildFilledPdfBytes() draws the
+  // same captured image into all of them — the on-screen preview has to agree with that.
+  wrapper.querySelectorAll('.field-input.signature').forEach(overlay => {
+    overlay.innerHTML = signatureImage ? '<img src="' + signatureImage + '" alt="Signature">' : 'Click to sign';
+  });
 }
 
 function clearSignature() {
   const pad = document.getElementById('sigPad');
   const ctx = pad.getContext('2d');
   ctx.clearRect(0, 0, pad.width, pad.height);
-  signatureImage = null;
+  sigHasInk = false;
   captureSignature();
   checkSubmitReady();
 }
@@ -501,6 +513,17 @@ function clearSignature() {
 // ---------- Submit ----------
 function checkSubmitReady() {
   const btn = document.getElementById('submitBtn');
+
+  // The confirmation box (accuracy + terms acceptance, in one control so a customer signing
+  // several forms in a chain isn't ticking two boxes per form) lives inside #signatureArea,
+  // which is only shown for templates that have a signature field — so it can only gate
+  // submission when it's actually on screen, otherwise a template without signatures would be
+  // unsubmittable via an invisible control.
+  const area = document.getElementById('signatureArea');
+  const confirmBox = document.getElementById('agreeTerms');
+  const confirmShown = area && area.style.display === 'block';
+  if (confirmShown && confirmBox && !confirmBox.checked) { btn.disabled = true; return; }
+
   const allRequired = template.fields.every((f, i) => {
     if (!f.required) return true;
     if (f.type === 'signature') return !!signatureImage;

@@ -110,6 +110,9 @@ app.post('/proxy/api/save-signed-pdf', verifyProxySignature, handleSaveSignedPdf
 app.get('/proxy/api/st4-status/:applicationId', verifyProxySignature, handleST4Status);
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Temporary kill switch for outbound email (signed-PDF copy + ST-4 link email).
+// Set EMAIL_ENABLED=1 to turn it back on.
+const EMAIL_ENABLED = process.env.EMAIL_ENABLED === '1';
 
 // Resolves a template id to its BC notify formType (see handleSaveSignedPdf
 // and handleST4Status) — defaults to 'st4', the only form type that existed
@@ -142,7 +145,7 @@ async function handleSaveSignedPdf(req, res) {
     const formType = resolveFormType(templateId);
 
     let emailed = false;
-    if (email && EMAIL_RE.test(email)) {
+    if (EMAIL_ENABLED && email && EMAIL_RE.test(email)) {
       try {
         await sendSignedPdfEmail(email, safeName, buffer);
         emailed = true;
@@ -578,8 +581,12 @@ app.post('/api/send-st4-link', async (req, res) => {
     const formUrl = `${baseUrl}&email=${encodeURIComponent(email)}&applicationId=${encodeURIComponent(applicationId)}`
       + (customerName ? `&name=${encodeURIComponent(customerName)}` : '');
 
-    await sendST4FormLinkEmail(email, customerName || '', formUrl);
-    res.json({ ok: true, formUrl });
+    if (EMAIL_ENABLED) {
+      await sendST4FormLinkEmail(email, customerName || '', formUrl);
+    } else {
+      console.log('EMAIL_ENABLED=0 — skipping ST-4 link email to', email);
+    }
+    res.json({ ok: true, formUrl, emailed: EMAIL_ENABLED });
   } catch (err) {
     console.error('send-st4-link error:', err.message);
     res.status(500).json({ error: err.message });

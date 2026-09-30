@@ -123,7 +123,7 @@ async function ensureLeadFolder(token, driveId, baseFolder, leadFolderName) {
 }
 
 /**
- * Uploads a PDF buffer to the configured SharePoint library.
+ * Uploads a buffer to the configured SharePoint library.
  * The stored name is prefixed with a timestamp so repeat submissions
  * never overwrite each other (Graph PUT silently replaces same names).
  * When folderSegment is given (a per-lead folder name, see
@@ -131,9 +131,11 @@ async function ensureLeadFolder(token, driveId, baseFolder, leadFolderName) {
  * instead of landing flat in baseFolder/ — used so a lead's two form PDFs
  * (this app now supports more than one form per applicationId) end up
  * together.
+ * contentType defaults to 'application/pdf' for existing callers; pass
+ * e.g. 'image/jpeg' when uploading non-PDF content.
  * Returns { id, webUrl, name } of the created drive item.
  */
-async function uploadPdfToSharePoint(filename, pdfBuffer, folderSegment) {
+async function uploadPdfToSharePoint(filename, pdfBuffer, folderSegment, contentType = 'application/pdf') {
   const token = await getGraphToken(sharepointCredentials());
   const driveId = await resolveDriveId(token);
 
@@ -152,7 +154,7 @@ async function uploadPdfToSharePoint(filename, pdfBuffer, folderSegment) {
     method: 'PUT',
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/pdf'
+      'Content-Type': contentType
     },
     body: pdfBuffer
   });
