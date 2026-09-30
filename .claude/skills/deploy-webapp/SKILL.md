@@ -1,13 +1,15 @@
 ---
 name: deploy-webapp
-description: Deploy the ST-4 PDF Signer Express app to Azure App Service (yog-st4-form). User-invoked only — production deploy.
+description: Deploy the ST-4 PDF Signer Express app to Azure App Service (yog-st4-form-prod). User-invoked only — production deploy.
 disable-model-invocation: true
 ---
 
-# Deploy yog-st4-form to Azure App Service
+# Deploy yog-st4-form-prod to Azure App Service
 
-Production target: Azure App Service Web App, Linux, Node 22, resource group
-`st4-pdf-signer-rg`, app `yog-st4-form` (`https://yog-st4-form.azurewebsites.net`).
+Production target: Azure App Service Web App, Linux, Node 22, app
+`yog-st4-form-prod` (`https://yog-st4-form-prod.azurewebsites.net`). The
+resource group `st4-pdf-signer-rg` was recorded for the earlier `yog-st4-form`
+app; confirm it with the user before step 3.
 
 Follow these steps **in order**. Do not skip step 1 — merchants edit templates live
 through the Designer between deploys, and a stale local `data/templates.json`
@@ -19,7 +21,7 @@ Fetch every template from the live server and compare against local before doing
 anything else:
 
 ```bash
-curl -s https://yog-st4-form.azurewebsites.net/api/templates > /tmp/live-templates.json
+curl -s https://yog-st4-form-prod.azurewebsites.net/api/templates > /tmp/live-templates.json
 ```
 
 Diff `/tmp/live-templates.json` against `data/templates.json`. If they differ,
@@ -36,14 +38,13 @@ the zip (`server\function.json`), which breaks Oryx's directory parsing.
 ```python
 import zipfile, os
 
-exclude_dirs = {'.git', 'node_modules', 'scripts', 'legacy', '.shopify', '.claude'}
-exclude_files = {'.env'}
+exclude_dirs = {'.git', 'node_modules', 'scripts', 'legacy', '.shopify', '.claude', '.remember'}
 
 with zipfile.ZipFile('deploy.zip', 'w', zipfile.ZIP_DEFLATED) as z:
     for root, dirs, files in os.walk('.'):
         dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith('.git')]
         for f in files:
-            if f in exclude_files or f.endswith('.md'):
+            if f.startswith('.env') or f.endswith(('.md', '.zip')):
                 continue
             path = os.path.join(root, f)
             arcname = os.path.relpath(path, '.').replace(os.sep, '/')
@@ -56,7 +57,7 @@ is already set as an app setting, so Oryx runs `npm install` server-side.
 ## 3. Deploy
 
 ```bash
-az webapp deploy --name yog-st4-form --resource-group st4-pdf-signer-rg --src-path deploy.zip --type zip
+az webapp deploy --name yog-st4-form-prod --resource-group st4-pdf-signer-rg --src-path deploy.zip --type zip
 ```
 
 This is a production deploy affecting a live app merchants use — confirm with
@@ -66,7 +67,7 @@ deploy in this same request.
 ## 4. Verify
 
 ```bash
-curl -s https://yog-st4-form.azurewebsites.net/api/templates | head -c 200
+curl -s https://yog-st4-form-prod.azurewebsites.net/api/templates | head -c 200
 ```
 
 Check the app responds and that the template count/IDs match what you deployed.
