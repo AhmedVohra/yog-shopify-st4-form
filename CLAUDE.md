@@ -129,7 +129,7 @@ After a successful submit, if the loaded template has `nextTemplateId` set, the 
 
 ### Azure Function round-trip — Business Central integration
 
-The customer-application lifecycle spans this app and a **separate Azure Function** (`CustomerApplication` on Function App `yelloglow-forms`, resource group `yell-o-glow-rg` — its source lives in its own repo at `C:\Users\ahmed\OneDrive\Documents\Yog shopify customer application form`, which has its own CLAUDE.md; don't edit it from here). The function owns the application records (Azure SQL `dbo.Applications`) and the NTLM calls into Business Central.
+The customer-application lifecycle spans this app and a **separate Azure Function** (`CustomerApplication` on Function App `yelloglow-forms-prod`, resource group `yell-o-glow-rg` — its source lives in its own repo in the sibling folder `..\Yog-shopify-customer-application-form`, which has its own CLAUDE.md; don't edit it from here). The function owns the application records (Azure SQL `dbo.Applications`) and the NTLM calls into Business Central.
 
 **A lead signs two chained PDFs.** The "Customer Application — Page 3" template (`formType: "page3"`, `nextTemplateId` set to the ST-4 template's id) sits between the storefront apply-account step and the ST-4 form: apply-account → page-3 form → ST-4 form → `/pages/pending-approval`. The chain mechanism (`nextTemplateId` on the template, `customer-form.html`'s post-submit redirect) is generic — see "Template storage" and the customer-form query-param paragraph above — the Function-side wiring below is what makes each link in the chain notify BC/SQL correctly.
 
@@ -152,7 +152,7 @@ The round-trip:
 
 The production target is an **Azure App Service Web App** (Linux, Node 22, F1 free tier, resource group `st4-pdf-signer-rg`, app `yog-st4-form-prod` — `https://yog-st4-form-prod.azurewebsites.net`) running the Express server directly via `npm start`; no custom handler layer. This was chosen over an Azure Functions custom handler after hitting a platform-level bug: Node custom handlers on Windows Consumption Function Apps intermittently fail to bind ("access to socket forbidden by its access permissions") — a known, documented Azure limitation, not a bug in this app. The server listens on `process.env.PORT` (App Service sets it) bound to all interfaces — **do not** bind only to `127.0.0.1`, since Azure's warmup/health probe reaches the container over its external interface, not loopback. `IN_AZURE` is detected via `WEBSITE_HOSTNAME` and skips the localtunnel there.
 
-**Resource group unconfirmed:** `shopify.app.toml` points at `yog-st4-form-prod`. The resource group and tier above were recorded for the earlier `yog-st4-form` app. Check with `az webapp list` before deploying, then update this section.
+**Tier unconfirmed:** F1 was recorded for the earlier `yog-st4-form` app, which is now stopped.
 
 **Deploying:**
 ```bash

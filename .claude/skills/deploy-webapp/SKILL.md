@@ -7,9 +7,8 @@ disable-model-invocation: true
 # Deploy yog-st4-form-prod to Azure App Service
 
 Production target: Azure App Service Web App, Linux, Node 22, app
-`yog-st4-form-prod` (`https://yog-st4-form-prod.azurewebsites.net`). The
-resource group `st4-pdf-signer-rg` was recorded for the earlier `yog-st4-form`
-app; confirm it with the user before step 3.
+`yog-st4-form-prod` (`https://yog-st4-form-prod.azurewebsites.net`), resource
+group `st4-pdf-signer-rg`.
 
 Follow these steps **in order**. Do not skip step 1 — merchants edit templates live
 through the Designer between deploys, and a stale local `data/templates.json`
